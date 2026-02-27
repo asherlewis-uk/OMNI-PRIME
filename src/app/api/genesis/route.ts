@@ -177,7 +177,7 @@ export async function POST(request: NextRequest) {
         description: def.description,
         systemPrompt: def.systemPrompt,
         temperature: def.temperature,
-        modelPreference: "ollama/llama3.1",
+        modelPreference: "ollama/qwen2.5-coder:7b",
         status: "active",
         isTemplate: false,
         genesisTag: genesisData.useCase,
