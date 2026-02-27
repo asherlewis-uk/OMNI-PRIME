@@ -1,0 +1,113 @@
+version: "3.8"
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: omni-prime-app
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=file:./data/omni.db
+      - REDIS_URL=redis://redis:6379
+      - OLLAMA_URL=http://host.docker.internal:11434
+      - CHROMA_URL=http://chroma:8000
+      - PORT=3000
+    volumes:
+      - omni-data:/app/data
+      - omni-chroma:/app/chroma
+    networks:
+      - omni-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - redis
+      - chroma
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  redis:
+    image: redis:7-alpine
+    container_name: omni-prime-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - omni-network
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  chroma:
+    image: chromadb/chroma:0.6.2
+    container_name: omni-prime-chroma
+    ports:
+      - "8000:8000"
+    volumes:
+      - chroma-data:/chroma/chroma
+    networks:
+      - omni-network
+    restart: unless-stopped
+    environment:
+      - IS_PERSISTENT=TRUE
+      - PERSIST_DIRECTORY=/chroma/chroma
+      - ANONYMIZED_TELEMETRY=FALSE
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Background worker for BullMQ job processing
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: omni-prime-worker
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=file:./data/omni.db
+      - REDIS_URL=redis://redis:6379
+      - OLLAMA_URL=http://host.docker.internal:11434
+      - CHROMA_URL=http://chroma:8000
+    volumes:
+      - omni-data:/app/data
+      - omni-chroma:/app/chroma
+    networks:
+      - omni-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - redis
+      - chroma
+      - app
+    restart: unless-stopped
+    deploy:
+      replicas: 2
+
+volumes:
+  omni-data:
+    driver: local
+  omni-chroma:
+    driver: local
+  redis-data:
+    driver: local
+
+networks:
+  omni-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
