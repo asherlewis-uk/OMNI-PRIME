@@ -3,6 +3,7 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import { Redis } from "ioredis";
+import type { RedisOptions } from "ioredis";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONFIGURATION
@@ -31,7 +32,7 @@ let isShuttingDown = false;
  */
 function getRedisConfig():
   | { url: string; options?: never }
-  | { url?: never; options: Redis.RedisOptions } {
+  | { url?: never; options: RedisOptions } {
   if (REDIS_URL && REDIS_URL !== "redis://localhost:6379") {
     return { url: REDIS_URL };
   }
@@ -58,7 +59,7 @@ function createRedisConnection(): Redis {
         maxRetriesPerRequest: null,
         enableReadyCheck: false,
       })
-    : new Redis(config.options);
+    : new Redis(config.options!);
 
   // Event handlers
   redis.on("connect", () => {
@@ -136,7 +137,7 @@ export function getRedisSubscriber(): Redis {
  * Check if Redis is connected.
  */
 export function isRedisConnected(): boolean {
-  return redisConnection?.status === "ready" ?? false;
+  return redisConnection?.status === "ready";
 }
 
 /**

@@ -8,8 +8,8 @@ import { QUEUE_NAMES } from "../queues";
 import type { ToolExecutionJob } from "../queues";
 import { mcpServerManager } from "@/lib/mcp/MCPServerManager";
 import { getDB } from "@/lib/db/client";
-import { toolCalls, messages } from "@/lib/db/schema";
-import { eq } from "drizzle-orm";
+import { toolCalls, messages, mcpTools } from "@/lib/db/schema";
+import { eq, sql } from "drizzle-orm";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // WORKER INSTANCE
@@ -194,14 +194,14 @@ async function updateToolCallSuccess(
       with: { tool: true },
     });
 
-    if (toolCall?.tool) {
+    if (toolCall?.toolId) {
       await db
-        .update(toolCalls)
+        .update(mcpTools)
         .set({
-          useCount: (toolCall.tool.useCount ?? 0) + 1,
+          useCount: sql`${mcpTools.useCount} + 1`,
           lastUsedAt: new Date(),
         })
-        .where(eq(toolCalls.id, toolCallId));
+        .where(eq(mcpTools.id, toolCall.toolId));
     }
   } catch (error) {
     console.error("[ToolWorker] Failed to update tool call success:", error);

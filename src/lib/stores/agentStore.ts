@@ -147,7 +147,7 @@ export const useAgentStore = create<AgentStore>()(
           set((state) => {
             const index = state.agents.findIndex((a) => a.id === agentId);
             if (index !== -1) {
-              state.agents[index] = { ...state.agents[index], ...updates };
+              state.agents[index] = { ...state.agents[index], ...updates } as Agent;
             }
             if (state.currentAgent?.id === agentId) {
               state.currentAgent = { ...state.currentAgent, ...updates };

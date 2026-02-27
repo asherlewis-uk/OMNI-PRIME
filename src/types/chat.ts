@@ -124,6 +124,9 @@ export interface MessageMetadata {
   hasToolCalls?: boolean;
   toolCallIds?: string[];
 
+  /** Attachment indicator */
+  hasAttachments?: boolean;
+
   /** User feedback */
   userRating?: "positive" | "negative" | null;
   userFeedback?: string | null;

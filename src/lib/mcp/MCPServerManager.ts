@@ -207,7 +207,20 @@ export class MCPServerManager {
         return null;
       }
 
-      const status = await this.connectServer(server);
+      // Coerce nullable fields to their required types
+      const compliantServer: MCPServer = {
+        ...server,
+        description: server.description ?? null,
+        url: server.url ?? null,
+        command: server.command ?? null,
+        statusMessage: server.statusMessage ?? null,
+        lastSyncedAt: server.lastSyncedAt ?? null,
+        args: server.args ?? [],
+        config: server.config ?? {},
+        env: server.env ?? {},
+      };
+
+      const status = await this.connectServer(compliantServer);
       if (status !== "connected") {
         return null;
       }

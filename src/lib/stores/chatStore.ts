@@ -76,6 +76,7 @@ interface ChatActions {
   deleteSession: (sessionId: string) => Promise<void>;
 
   // Message Actions
+  fetchMessages: (sessionId: string) => Promise<void>;
   setMessages: (sessionId: string, messages: Message[]) => void;
   addMessage: (sessionId: string, message: MessageWithUIState) => void;
   updateMessage: (
@@ -184,7 +185,7 @@ export const useChatStore = create<ChatStore>()(
           set((state) => {
             const index = state.sessions.findIndex((s) => s.id === sessionId);
             if (index !== -1) {
-              state.sessions[index] = { ...state.sessions[index], ...updates };
+              state.sessions[index] = { ...state.sessions[index], ...updates } as ChatSession;
             }
           });
         },
@@ -264,8 +265,9 @@ export const useChatStore = create<ChatStore>()(
 
             set((state) => {
               const index = state.sessions.findIndex((s) => s.id === sessionId);
-              if (index !== -1) {
-                state.sessions[index].isArchived = true;
+              const session = state.sessions[index];
+              if (session) {
+                session.isArchived = true;
               }
             });
           } catch (error) {
@@ -296,8 +298,33 @@ export const useChatStore = create<ChatStore>()(
         },
 
         // ═══════════════════════════════════════════════════════════════════════
-        // MESSAGE ACTIONS
+        // ASYNC MESSAGE ACTIONS
         // ═══════════════════════════════════════════════════════════════════════
+
+        fetchMessages: async (sessionId: string) => {
+          set((state) => {
+            state.isLoadingMessages = true;
+          });
+
+          try {
+            const response = await fetch(`/api/chat/sessions/${sessionId}/messages`);
+            if (!response.ok) {
+              throw new Error("Failed to fetch messages");
+            }
+
+            const data = (await response.json()) as { messages: Message[] };
+            get().setMessages(sessionId, data.messages);
+          } catch (error) {
+            set((state) => {
+              state.error =
+                error instanceof Error ? error.message : "Failed to load messages";
+            });
+          } finally {
+            set((state) => {
+              state.isLoadingMessages = false;
+            });
+          }
+        },
 
         setMessages: (sessionId, messages) => {
           const messagesWithUI: MessageWithUIState[] = messages.map((m) => ({
@@ -331,7 +358,7 @@ export const useChatStore = create<ChatStore>()(
               sessionMessages[index] = {
                 ...sessionMessages[index],
                 ...updates,
-              };
+              } as MessageWithUIState;
             }
           });
         },
@@ -342,9 +369,10 @@ export const useChatStore = create<ChatStore>()(
             if (!sessionMessages) return;
 
             const index = sessionMessages.findIndex((m) => m.id === messageId);
-            if (index !== -1) {
-              sessionMessages[index].streamingContent += content;
-              sessionMessages[index].content += content;
+            const message = sessionMessages[index];
+            if (message) {
+              message.streamingContent += content;
+              message.content += content;
             }
           });
         },
@@ -673,34 +701,7 @@ export const useChatStore = create<ChatStore>()(
   )
 );
 
-// Add fetchMessages method manually since it's referenced but not defined in the interface
-useChatStore.setState((state) => ({
-  ...state,
-  fetchMessages: async (sessionId: string) => {
-    useChatStore.setState((s) => {
-      s.isLoadingMessages = true;
-    });
 
-    try {
-      const response = await fetch(`/api/chat/sessions/${sessionId}/messages`);
-      if (!response.ok) {
-        throw new Error("Failed to fetch messages");
-      }
-
-      const data = (await response.json()) as { messages: Message[] };
-      useChatStore.getState().setMessages(sessionId, data.messages);
-    } catch (error) {
-      useChatStore.setState((s) => {
-        s.error =
-          error instanceof Error ? error.message : "Failed to load messages";
-      });
-    } finally {
-      useChatStore.setState((s) => {
-        s.isLoadingMessages = false;
-      });
-    }
-  },
-}));
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SELECTOR HOOKS

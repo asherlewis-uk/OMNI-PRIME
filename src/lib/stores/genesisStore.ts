@@ -210,14 +210,18 @@ export const useGenesisStore = create<GenesisStore>()(
         setUseCase: (useCase) => {
           set((state) => {
             state.answers.useCase = useCase;
-            state.steps[0].data = { useCase };
+            if (state.steps[0]) {
+              state.steps[0].data = { useCase };
+            }
           });
         },
 
         setObjectives: (objectives) => {
           set((state) => {
             state.answers.objectives = objectives;
-            state.steps[1].data = { objectives };
+            if (state.steps[1]) {
+              state.steps[1].data = { objectives };
+            }
           });
         },
 
@@ -232,7 +236,9 @@ export const useGenesisStore = create<GenesisStore>()(
               state.answers.objectives = current.filter((o) => o !== objective);
             }
 
-            state.steps[1].data = { objectives: state.answers.objectives };
+            if (state.steps[1]) {
+              state.steps[1].data = { objectives: state.answers.objectives };
+            }
           });
         },
 
@@ -257,7 +263,9 @@ export const useGenesisStore = create<GenesisStore>()(
         setToolPreferences: (tools) => {
           set((state) => {
             state.answers.toolPreferences = tools;
-            state.steps[2].data = { tools };
+            if (state.steps[2]) {
+              state.steps[2].data = { tools };
+            }
           });
         },
 
@@ -272,7 +280,9 @@ export const useGenesisStore = create<GenesisStore>()(
               state.answers.toolPreferences = current.filter((t) => t !== tool);
             }
 
-            state.steps[2].data = { tools: state.answers.toolPreferences };
+            if (state.steps[2]) {
+              state.steps[2].data = { tools: state.answers.toolPreferences };
+            }
           });
         },
 

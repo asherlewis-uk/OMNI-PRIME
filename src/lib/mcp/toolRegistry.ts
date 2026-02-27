@@ -98,6 +98,34 @@ const TOOL_CATEGORIES: Record<string, ToolCategory> = {
 // TOOL REGISTRY CLASS
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// Helper to safely coerce a raw DB tool into a compliant MCPTool
+const toMCPTool = (
+  tool: any
+): MCPTool | null => {
+  if (!tool) return null;
+
+  const server = tool.server
+    ? {
+        ...tool.server,
+        args: tool.server.args ?? [],
+        description: tool.server.description ?? "",
+        url: tool.server.url ?? "",
+        config: tool.server.config ?? {},
+        isSecure: !!tool.server.isSecure,
+        acceptsFile: !!tool.server.acceptsFile,
+      }
+    : undefined;
+
+  return {
+    ...tool,
+    description: tool.description ?? "",
+    inputSchema: tool.inputSchema ?? {},
+    lastUsedAt: tool.lastUsedAt ?? null,
+    server,
+  };
+};
+
+
 export class ToolRegistry {
   private cache: Map<string, MCPTool> = new Map();
   private cacheTimestamp: number = 0;
@@ -138,7 +166,8 @@ export class ToolRegistry {
       orderBy: [sql`${mcpTools.useCount} DESC`],
     });
 
-    const tools = await query;
+    const rawTools = await query;
+    const tools = rawTools.map(toMCPTool).filter((t): t is MCPTool => t !== null);
 
     // Filter by category if specified (post-query since it's derived)
     let filteredTools = tools;
@@ -155,7 +184,7 @@ export class ToolRegistry {
     const totalCount = Number(countResult[0]?.count ?? 0);
 
     return {
-      tools: filteredTools as MCPTool[],
+      tools: filteredTools,
       totalCount,
       hasMore: offset + filteredTools.length < totalCount,
     };
@@ -172,19 +201,21 @@ export class ToolRegistry {
     }
 
     const db = getDB();
-    const tool = await db.query.mcpTools.findFirst({
+    const rawTool = await db.query.mcpTools.findFirst({
       where: eq(mcpTools.id, toolId),
       with: {
         server: true,
       },
     });
 
+    const tool = toMCPTool(rawTool);
+
     if (tool) {
-      this.cache.set(toolId, tool as MCPTool);
+      this.cache.set(toolId, tool);
       this.cacheTimestamp = Date.now();
     }
 
-    return (tool as MCPTool) ?? null;
+    return tool;
   }
 
   /**
@@ -194,14 +225,14 @@ export class ToolRegistry {
     if (toolIds.length === 0) return [];
 
     const db = getDB();
-    const tools = await db.query.mcpTools.findMany({
+    const rawTools = await db.query.mcpTools.findMany({
       where: sql`${mcpTools.id} IN ${toolIds}`,
       with: {
         server: true,
       },
     });
 
-    return tools as MCPTool[];
+    return rawTools.map(toMCPTool).filter((t): t is MCPTool => t !== null);
   }
 
   /**
@@ -225,7 +256,7 @@ export class ToolRegistry {
     });
 
     return agentTools
-      .map((at) => at.tool)
+      .map((at) => toMCPTool(at.tool))
       .filter((t): t is MCPTool => t !== null);
   }
 
