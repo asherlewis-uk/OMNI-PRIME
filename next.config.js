@@ -2,8 +2,7 @@
 const nextConfig = {
   reactStrictMode: true,
   swcMinify: true,
-  output: "export",
-  distDir: "dist",
+  distDir: ".next", // Changed from 'dist' back to Next.js standard
   images: {
     unoptimized: true,
   },
@@ -12,35 +11,17 @@ const nextConfig = {
       {
         source: "/:path*",
         headers: [
-          {
-            key: "X-Frame-Options",
-            value: "DENY",
-          },
-          {
-            key: "X-Content-Type-Options",
-            value: "nosniff",
-          },
-          {
-            key: "Referrer-Policy",
-            value: "strict-origin-when-cross-origin",
-          },
-          {
-            key: "Permissions-Policy",
-            value: "camera=(), microphone=(), geolocation=()",
-          },
+          { key: "X-Frame-Options", value: "DENY" },
+          { key: "X-Content-Type-Options", value: "nosniff" },
+          { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+          { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
         ],
       },
       {
         source: "/manifest.json",
         headers: [
-          {
-            key: "Content-Type",
-            value: "application/manifest+json",
-          },
-          {
-            key: "Cache-Control",
-            value: "public, max-age=0, must-revalidate",
-          },
+          { key: "Content-Type", value: "application/manifest+json" },
+          { key: "Cache-Control", value: "public, max-age=0, must-revalidate" },
         ],
       },
     ];
@@ -66,37 +47,12 @@ const nextConfig = {
     if (!isServer) {
       config.resolve.fallback = {
         ...config.resolve.fallback,
-        fs: false,
-        net: false,
-        tls: false,
-        crypto: false,
-        path: false,
-        os: false,
-        url: false,
-        zlib: false,
-        http: false,
-        https: false,
-        stream: false,
-        buffer: false,
-        util: false,
-        assert: false,
-        constants: false,
-        child_process: false,
-        dns: false,
-        dgram: false,
-        cluster: false,
-        module: false,
-        readline: false,
-        repl: false,
-        vm: false,
-        async_hooks: false,
-        inspector: false,
-        perf_hooks: false,
-        trace_events: false,
-        worker_threads: false,
-        v8: false,
-        wasi: false,
-        node: false,
+        fs: false, net: false, tls: false, crypto: false, path: false, os: false,
+        url: false, zlib: false, http: false, https: false, stream: false,
+        buffer: false, util: false, assert: false, constants: false, child_process: false,
+        dns: false, dgram: false, cluster: false, module: false, readline: false,
+        repl: false, vm: false, async_hooks: false, inspector: false, perf_hooks: false,
+        trace_events: false, worker_threads: false, v8: false, wasi: false, node: false,
       };
     }
 
@@ -112,7 +68,6 @@ const nextConfig = {
   experimental: {
     scrollRestoration: true,
   },
-  // Disable type checking during build (we do this separately)
   typescript: {
     ignoreBuildErrors: false,
   },

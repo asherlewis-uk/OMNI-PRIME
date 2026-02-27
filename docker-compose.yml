@@ -1,38 +1,4 @@
-version: "3.8"
-
 services:
-  app:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: omni-prime-app
-    ports:
-      - "3000:3000"
-    environment:
-      - NODE_ENV=production
-      - DATABASE_URL=file:./data/omni.db
-      - REDIS_URL=redis://redis:6379
-      - OLLAMA_URL=http://host.docker.internal:11434
-      - CHROMA_URL=http://chroma:8000
-      - PORT=3000
-    volumes:
-      - omni-data:/app/data
-      - omni-chroma:/app/chroma
-    networks:
-      - omni-network
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    depends_on:
-      - redis
-      - chroma
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
-
   redis:
     image: redis:7-alpine
     container_name: omni-prime-redis
@@ -56,7 +22,7 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - chroma-data:/chroma/chroma
+      - omni-chroma:/chroma/chroma # Fixed the volume name mismatch
     networks:
       - omni-network
     restart: unless-stopped
@@ -70,36 +36,7 @@ services:
       timeout: 10s
       retries: 3
 
-  # Background worker for BullMQ job processing
-  worker:
-    build:
-      context: .
-      dockerfile: Dockerfile.worker
-    container_name: omni-prime-worker
-    environment:
-      - NODE_ENV=production
-      - DATABASE_URL=file:./data/omni.db
-      - REDIS_URL=redis://redis:6379
-      - OLLAMA_URL=http://host.docker.internal:11434
-      - CHROMA_URL=http://chroma:8000
-    volumes:
-      - omni-data:/app/data
-      - omni-chroma:/app/chroma
-    networks:
-      - omni-network
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    depends_on:
-      - redis
-      - chroma
-      - app
-    restart: unless-stopped
-    deploy:
-      replicas: 2
-
 volumes:
-  omni-data:
-    driver: local
   omni-chroma:
     driver: local
   redis-data:

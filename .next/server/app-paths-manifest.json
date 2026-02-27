@@ -1,13 +1,5 @@
 {
   "/_not-found/page": "app/_not-found/page.js",
-  "/api/agents/[agentId]/route": "app/api/agents/[agentId]/route.js",
-  "/api/agents/route": "app/api/agents/route.js",
-  "/api/chat/route": "app/api/chat/route.js",
-  "/api/chat/stream/route": "app/api/chat/stream/route.js",
-  "/api/mcp/servers/route": "app/api/mcp/servers/route.js",
-  "/dashboard/page": "app/dashboard/page.js",
-  "/api/genesis/route": "app/api/genesis/route.js",
-  "/api/tools/route": "app/api/tools/route.js",
-  "/onboarding/page": "app/onboarding/page.js",
-  "/page": "app/page.js"
+  "/page": "app/page.js",
+  "/onboarding/page": "app/onboarding/page.js"
 }
