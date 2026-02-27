@@ -1,4 +1,40 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# OMNI-PRIME — Docker Compose (Development)
+# Sovereign Pocket Enterprise — All services on ai-stack-net bridge
+# ═══════════════════════════════════════════════════════════════════════════════
+
 services:
+  # ─── Next.js Application ──────────────────────────────────────────────────
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: omni-prime-app
+    ports:
+      - "3001:3000"
+    environment:
+      - NODE_ENV=development
+      - DATABASE_URL=file:./data/omni.db
+      - REDIS_URL=redis://redis:6379
+      - OLLAMA_URL=http://host.docker.internal:11434
+      - CHROMA_URL=http://chroma:8000
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+    volumes:
+      - ./data:/app/data
+      - ./src:/app/src
+    networks:
+      - ai-stack-net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      redis:
+        condition: service_healthy
+      chroma:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ─── Redis (BullMQ Queue Backend) ─────────────────────────────────────────
   redis:
     image: redis:7-alpine
     container_name: omni-prime-redis
@@ -7,7 +43,7 @@ services:
     volumes:
       - redis-data:/data
     networks:
-      - omni-network
+      - ai-stack-net
     restart: unless-stopped
     command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
     healthcheck:
@@ -16,15 +52,16 @@ services:
       timeout: 5s
       retries: 5
 
+  # ─── ChromaDB (Local Vector Storage) ──────────────────────────────────────
   chroma:
     image: chromadb/chroma:0.6.2
     container_name: omni-prime-chroma
     ports:
       - "8000:8000"
     volumes:
-      - omni-chroma:/chroma/chroma # Fixed the volume name mismatch
+      - chroma-data:/chroma/chroma
     networks:
-      - omni-network
+      - ai-stack-net
     restart: unless-stopped
     environment:
       - IS_PERSISTENT=TRUE
@@ -36,15 +73,14 @@ services:
       timeout: 10s
       retries: 3
 
+# ─── Volumes ──────────────────────────────────────────────────────────────────
 volumes:
-  omni-chroma:
-    driver: local
   redis-data:
     driver: local
+  chroma-data:
+    driver: local
 
+# ─── Network ──────────────────────────────────────────────────────────────────
 networks:
-  omni-network:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: 172.20.0.0/16
+  ai-stack-net:
+    external: true

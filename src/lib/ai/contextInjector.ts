@@ -1,154 +1,129 @@
-import Dexie from "dexie";
-import type { GenesisData, GenesisContext, UseCaseType, SkillLevel, ContentTone, WorkStyle } from "@/types/genesis";
-
 // ═══════════════════════════════════════════════════════════════════════════════
-// TYPES
+// CONTEXT INJECTOR — Server-Side Genesis Context for LLM System Prompts
+//
+// SERVER-SIDE ONLY. This module reads from SQLite via reconstructGenesisData().
+// It does NOT import Dexie.js or any browser-only API.
+//
+// For client-side genesis caching (IndexedDB/Dexie), use the genesisStore
+// Zustand store which persists to localStorage and can hydrate from the API.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/**
- * Cached genesis profile entry.
- */
-interface CachedGenesisProfile {
-  id: string;
-  data: GenesisData;
-  timestamp: number;
-}
+import { reconstructGenesisData } from "@/lib/db/client";
+import type {
+  GenesisData,
+  GenesisContext,
+  UseCaseType,
+  SkillLevel,
+  ContentTone,
+  WorkStyle,
+} from "@/types/genesis";
+
+// ─── Types ───────────────────────────────────────────────────────────────────
 
 /**
  * Context injection options.
  */
 export interface InjectionOptions {
-  /** Include expertise guidance */
   includeExpertise?: boolean;
-
-  /** Include tone guidance */
   includeTone?: boolean;
-
-  /** Include work style guidance */
   includeWorkStyle?: boolean;
-
-  /** Include tool preferences */
   includeTools?: boolean;
-
-  /** Custom prefix for context block */
   contextPrefix?: string;
-
-  /** Custom suffix for context block */
   contextSuffix?: string;
-
-  /** Format style */
   format?: "detailed" | "compact" | "minimal";
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// DEXIE DATABASE FOR CLIENT-SIDE CACHING
-// ═══════════════════════════════════════════════════════════════════════════════
-
-class GenesisDatabase extends Dexie {
-  profiles!: Dexie.Table<CachedGenesisProfile, string>;
-
-  constructor() {
-    super("OmniPrimeGenesis");
-    this.version(1).stores({
-      profiles: "id, timestamp",
-    });
-  }
-}
-
-const dexie = new GenesisDatabase();
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// CONTEXT INJECTOR CLASS
-// ═══════════════════════════════════════════════════════════════════════════════
+// ─── Context Injector Class ──────────────────────────────────────────────────
 
 export class ContextInjector {
-  private cache: CachedGenesisProfile | null = null;
-  private readonly CACHE_KEY = "omni_prime_genesis_profile";
-  private readonly CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
+  private cache: GenesisData | null = null;
+  private cacheTimestamp: number = 0;
+  private readonly CACHE_TTL = 5 * 60 * 1000; // 5 minutes in-memory TTL
 
-  constructor() {
-    // Initialize cache on construction
-    this.initialize().catch(console.error);
+  /**
+   * Load the genesis profile from SQLite into the in-memory cache.
+   * Called lazily on first access or when cache is stale.
+   */
+  async loadProfile(profileId?: string): Promise<GenesisData | null> {
+    const data = await reconstructGenesisData(profileId);
+    if (data) {
+      this.cache = data;
+      this.cacheTimestamp = Date.now();
+    }
+    return data;
   }
 
   /**
-   * Initialize the injector by loading from IndexedDB.
+   * Set the genesis profile directly (e.g., after onboarding completes).
+   * Avoids an extra DB round-trip when the caller already has the data.
    */
-  async initialize(): Promise<void> {
-    try {
-      const stored = await dexie.profiles.get(this.CACHE_KEY);
-      if (stored && Date.now() - stored.timestamp < this.CACHE_TTL) {
-        this.cache = stored;
-      }
-    } catch (error) {
-      console.error("Failed to initialize ContextInjector:", error);
-    }
-  }
-
-  /**
-   * Cache the genesis profile.
-   */
-  async cacheProfile(data: GenesisData): Promise<void> {
-    const entry: CachedGenesisProfile = {
-      id: this.CACHE_KEY,
-      data,
-      timestamp: Date.now(),
-    };
-
-    this.cache = entry;
-
-    try {
-      await dexie.profiles.put(entry);
-    } catch (error) {
-      console.error("Failed to cache genesis profile:", error);
-    }
+  setProfile(data: GenesisData): void {
+    this.cache = data;
+    this.cacheTimestamp = Date.now();
   }
 
   /**
    * Get the cached genesis profile.
+   * Returns null if no profile has been loaded.
    */
   getProfile(): GenesisData | null {
-    return this.cache?.data ?? null;
+    return this.cache;
   }
 
   /**
-   * Check if a profile is cached.
+   * Check if a profile is loaded.
    */
   hasProfile(): boolean {
     return this.cache !== null;
   }
 
   /**
-   * Clear the cached profile.
+   * Check if the in-memory cache is stale.
    */
-  async clearProfile(): Promise<void> {
-    this.cache = null;
-    try {
-      await dexie.profiles.delete(this.CACHE_KEY);
-    } catch (error) {
-      console.error("Failed to clear genesis profile:", error);
-    }
+  isCacheStale(): boolean {
+    if (!this.cache) return true;
+    return Date.now() - this.cacheTimestamp > this.CACHE_TTL;
   }
 
   /**
-   * Generate the full genesis context string for injection.
+   * Clear the in-memory cache.
+   */
+  clearProfile(): void {
+    this.cache = null;
+    this.cacheTimestamp = 0;
+  }
+
+  /**
+   * Ensure the cache is populated. Loads from DB if stale or empty.
+   */
+  async ensureLoaded(profileId?: string): Promise<GenesisData | null> {
+    if (this.cache && !this.isCacheStale()) {
+      return this.cache;
+    }
+    return this.loadProfile(profileId);
+  }
+
+  // ─── Context Generation ────────────────────────────────────────────────────
+
+  /**
+   * Generate the full genesis context string for injection into system prompts.
+   * Reads from the in-memory cache. Call `ensureLoaded()` before this if needed.
    */
   getGenesisContext(options: InjectionOptions = {}): string {
-    if (!this.cache?.data) {
+    if (!this.cache) {
       return "";
     }
 
-    const data = this.cache.data;
     const format = options.format ?? "detailed";
 
     switch (format) {
       case "minimal":
-        return this.formatMinimalContext(data, options);
+        return this.formatMinimalContext(this.cache);
       case "compact":
-        return this.formatCompactContext(data, options);
+        return this.formatCompactContext(this.cache, options);
       case "detailed":
       default:
-        return this.formatDetailedContext(data, options);
+        return this.formatDetailedContext(this.cache, options);
     }
   }
 
@@ -156,7 +131,7 @@ export class ContextInjector {
    * Generate structured context components.
    */
   getContextComponents(): GenesisContext {
-    if (!this.cache?.data) {
+    if (!this.cache) {
       return {
         formattedContext: "",
         expertiseGuidance: "",
@@ -165,22 +140,21 @@ export class ContextInjector {
       };
     }
 
-    const data = this.cache.data;
-
     return {
       formattedContext: this.getGenesisContext(),
-      expertiseGuidance: this.getExpertiseGuidance(data.skillLevel),
-      toneGuidance: this.getToneGuidance(data.contentTone),
-      workStyleGuidance: this.getWorkStyleGuidance(data.workStyle),
+      expertiseGuidance: this.getExpertiseGuidance(this.cache.skillLevel),
+      toneGuidance: this.getToneGuidance(this.cache.contentTone),
+      workStyleGuidance: this.getWorkStyleGuidance(this.cache.workStyle),
     };
   }
 
   /**
    * Build a complete system prompt with injected context.
+   * This is the primary entry point used by API routes.
    */
   buildSystemPrompt(
     basePrompt: string,
-    options: InjectionOptions & { position?: "start" | "end" } = {}
+    options: InjectionOptions & { position?: "start" | "end" } = {},
   ): string {
     const context = this.getGenesisContext(options);
 
@@ -192,35 +166,32 @@ export class ContextInjector {
 
     if (position === "start") {
       return `${context}\n\n${basePrompt}`;
-    } else {
-      return `${basePrompt}\n\n${context}`;
     }
+    return `${basePrompt}\n\n${context}`;
   }
 
-  // ═════════════════════════════════════════════════════════════════════════════
-  // FORMATTING METHODS
-  // ═════════════════════════════════════════════════════════════════════════════
+  // ─── Formatting Methods ────────────────────────────────────────────────────
 
   private formatDetailedContext(
     data: GenesisData,
-    options: InjectionOptions
+    options: InjectionOptions = {},
   ): string {
     const lines: string[] = [
       options.contextPrefix ?? "[OMNI-PRIME USER CONTEXT]",
-      "─".repeat(40),
+      "\u2500".repeat(40),
       "",
       "Identity Profile:",
-      `• Role: ${this.formatUseCase(data.useCase)}`,
-      `• Expertise: ${data.skillLevel}`,
-      `• Work Style: ${data.workStyle}`,
-      `• Communication: ${data.contentTone}`,
+      `\u2022 Role: ${this.formatUseCase(data.useCase)}`,
+      `\u2022 Expertise: ${data.skillLevel}`,
+      `\u2022 Work Style: ${data.workStyle}`,
+      `\u2022 Communication: ${data.contentTone}`,
       "",
     ];
 
     if (data.objectives.length > 0) {
       lines.push("Primary Objectives:");
       for (const objective of data.objectives) {
-        lines.push(`• ${objective}`);
+        lines.push(`\u2022 ${objective}`);
       }
       lines.push("");
     }
@@ -228,7 +199,7 @@ export class ContextInjector {
     if (options.includeTools !== false && data.toolPreferences.length > 0) {
       lines.push("Preferred Tools:");
       for (const tool of data.toolPreferences) {
-        lines.push(`• ${tool}`);
+        lines.push(`\u2022 ${tool}`);
       }
       lines.push("");
     }
@@ -248,7 +219,7 @@ export class ContextInjector {
       lines.push("");
     }
 
-    lines.push("─".repeat(40));
+    lines.push("\u2500".repeat(40));
     lines.push(options.contextSuffix ?? "[END CONTEXT]");
 
     return lines.join("\n");
@@ -256,7 +227,7 @@ export class ContextInjector {
 
   private formatCompactContext(
     data: GenesisData,
-    options: InjectionOptions
+    options: InjectionOptions,
   ): string {
     const parts: string[] = [
       "[Context]",
@@ -280,18 +251,11 @@ export class ContextInjector {
     return parts.join(" | ");
   }
 
-  private formatMinimalContext(
-    _data: GenesisData,
-    _options: InjectionOptions
-  ): string {
-    // Minimal context is just a marker that context exists
-    // Actual behavior modifiers are applied by the gateway
+  private formatMinimalContext(_data: GenesisData): string {
     return "[Personalized Context Active]";
   }
 
-  // ═════════════════════════════════════════════════════════════════════════════
-  // GUIDANCE GENERATORS
-  // ═════════════════════════════════════════════════════════════════════════════
+  // ─── Guidance Generators ───────────────────────────────────────────────────
 
   private getExpertiseGuidance(level: SkillLevel): string {
     const guidance: Record<SkillLevel, string> = {
@@ -302,7 +266,6 @@ export class ContextInjector {
       expert:
         "GUIDANCE: Be concise and technical. Skip basic explanations. Focus on edge cases, optimization, and advanced patterns.",
     };
-
     return guidance[level];
   }
 
@@ -317,26 +280,20 @@ export class ContextInjector {
       creative:
         "TONE: Expressive, use analogies and metaphors. Engaging, inspiring, and imaginative.",
     };
-
     return guidance[tone];
   }
 
   private getWorkStyleGuidance(style: WorkStyle): string {
     const guidance: Record<WorkStyle, string> = {
-      solo:
-        "WORK STYLE: Provide complete, self-contained solutions. The user works independently.",
-      team:
-        "WORK STYLE: Consider collaboration patterns. Suggest how outputs can be shared or reviewed by others.",
+      solo: "WORK STYLE: Provide complete, self-contained solutions. The user works independently.",
+      team: "WORK STYLE: Consider collaboration patterns. Suggest how outputs can be shared or reviewed by others.",
       hybrid:
         "WORK STYLE: Balance independent work with collaborative checkpoints. Offer both solo and team-oriented approaches.",
     };
-
     return guidance[style];
   }
 
-  // ═════════════════════════════════════════════════════════════════════════════
-  // UTILITY METHODS
-  // ═════════════════════════════════════════════════════════════════════════════
+  // ─── Utility ───────────────────────────────────────────────────────────────
 
   private formatUseCase(useCase: UseCaseType): string {
     const displayNames: Record<UseCaseType, string> = {
@@ -349,25 +306,7 @@ export class ContextInjector {
       student: "Student",
       custom: "Custom User",
     };
-
     return displayNames[useCase] ?? "User";
-  }
-
-  /**
-   * Get cache age in milliseconds.
-   */
-  getCacheAge(): number | null {
-    if (!this.cache) return null;
-    return Date.now() - this.cache.timestamp;
-  }
-
-  /**
-   * Check if cache is stale (older than TTL).
-   */
-  isCacheStale(): boolean {
-    const age = this.getCacheAge();
-    if (age === null) return true;
-    return age > this.CACHE_TTL;
   }
 }
 
@@ -376,9 +315,3 @@ export class ContextInjector {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export const contextInjector = new ContextInjector();
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// EXPORT TYPES
-// ═══════════════════════════════════════════════════════════════════════════════
-
-export type { CachedGenesisProfile };

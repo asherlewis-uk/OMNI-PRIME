@@ -38,18 +38,19 @@ export function GenesisWizard() {
     toggleToolPreference,
   } = useGenesisStore();
 
-  const [isCompleting, setIsCompleting] = React.useState(false);
-
-  const handleComplete = async () => {
-    if (isCompleting) return;
-    setIsCompleting(true);
-    const result = await completeOnboarding();
-    if (result?.success) {
-      localStorage.setItem("omni-genesis-complete", "true");
-      localStorage.setItem("omni-profile-id", result.profileId);
-      router.push("/dashboard");
+  React.useEffect(() => {
+    if (currentStep === totalSteps - 1 && !isGenerating && !isComplete) {
+      completeOnboarding().then((result) => {
+        if (result?.success) {
+          localStorage.setItem("omni-genesis-complete", "true");
+          localStorage.setItem("omni-profile-id", result.profileId);
+        }
+      });
     }
-    setIsCompleting(false);
+  }, [currentStep, totalSteps, isGenerating, isComplete, completeOnboarding]);
+
+  const handleComplete = () => {
+    router.push("/dashboard");
   };
 
   const progress = ((currentStep + 1) / totalSteps) * 100;
@@ -154,20 +155,11 @@ export function GenesisWizard() {
             ) : (
               <Button
                 onClick={handleComplete}
-                disabled={isGenerating || isCompleting || !isComplete}
+                disabled={!isComplete}
                 className="h-12 px-8 bg-indigo-600 hover:bg-indigo-500 text-white font-medium disabled:opacity-50"
               >
-                {isCompleting ? (
-                  <>
-                    <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-                    Launching...
-                  </>
-                ) : (
-                  <>
-                    Launch OMNI
-                    <Sparkles className="ml-2 h-5 w-5" />
-                  </>
-                )}
+                Launch OMNI
+                <Sparkles className="ml-2 h-5 w-5" />
               </Button>
             )}
           </div>

@@ -1,52 +1,64 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// SWARM TYPES - Multi-Agent Orchestration
+// SWARM TYPES — Multi-Agent Orchestration
+// Canonical source of truth for all Swarm domain types.
+// Column-level alignment: scalar fields on SwarmDef mirror the `swarm_defs`
+// Drizzle table. SwarmGraphNode and HandoffRule are JSON sub-structures stored
+// inside swarm_defs.graph_json and annotated via $type<> in the schema.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import type { Agent } from "./agent";
 import type { Message } from "./chat";
 
+// ─── Enums ───────────────────────────────────────────────────────────────────
+
 /**
  * Swarm handoff condition types.
+ * Used by HandoffRule.condition and stored inside swarm_defs.graph_json.
  */
 export type HandoffCondition =
-  | "always"          // Always handoff after response
-  | "keyword"         // Handoff on specific keyword detection
-  | "tool_required"   // Handoff when specific tool needed
-  | "intent_match"    // Handoff based on intent classification
-  | "custom";         // Custom LLM-evaluated condition
+  | "always"
+  | "keyword"
+  | "tool_required"
+  | "intent_match"
+  | "custom";
+
+// ─── JSON Sub-Structures (stored inside swarm_defs.graph_json) ───────────────
 
 /**
  * Handoff rule for swarm graph edges.
+ * Defines when and why control transfers from one agent to another.
+ * Stored as part of SwarmGraphNode inside swarm_defs.graph_json (JSON column).
  */
 export interface HandoffRule {
   /** Target agent ID */
   targetAgentId: string;
 
-  /** Target agent name (denormalized) */
+  /** Target agent name (denormalized for display) */
   targetAgentName: string;
 
   /** Condition type for handoff */
   condition: HandoffCondition;
 
-  /** Condition value (keyword, tool name, or intent) */
+  /** Condition value (keyword, tool name, or intent string) */
   conditionValue?: string;
 
   /** Custom prompt for LLM evaluation (for 'custom' condition) */
   customPrompt?: string;
 
-  /** Priority (higher = evaluated first) */
+  /** Priority — higher values are evaluated first */
   priority: number;
 }
 
 /**
  * Swarm graph node.
  * Represents an agent in the swarm topology.
+ * Stored as array elements inside swarm_defs.graph_json (JSON column).
  */
 export interface SwarmGraphNode {
-  /** Agent ID */
+  /** FK reference → agents.id */
   agentId: string;
 
-  /** Agent name (denormalized) */
+  /** Agent name (denormalized for display) */
   agentName: string;
 
   /** Position in visual editor (x, y coordinates) */
@@ -55,7 +67,7 @@ export interface SwarmGraphNode {
   /** Outgoing handoff rules */
   handoffRules: HandoffRule[];
 
-  /** Node metadata */
+  /** Node metadata for visual editor */
   metadata?: {
     color?: string;
     icon?: string;
@@ -63,15 +75,17 @@ export interface SwarmGraphNode {
   };
 }
 
+// ─── Core Entities ───────────────────────────────────────────────────────────
+
 /**
  * Swarm definition entity.
- * Represents a configured multi-agent workflow.
+ * Maps to: swarm_defs table.
  */
 export interface SwarmDef {
-  /** Unique identifier */
+  /** PK — auto-generated UUID */
   id: string;
 
-  /** Owner profile ID */
+  /** FK → user_profiles.id */
   ownerId: string;
 
   /** Swarm name */
@@ -80,10 +94,10 @@ export interface SwarmDef {
   /** Description of purpose */
   description: string | null;
 
-  /** Agent topology as directed graph */
-  graph: SwarmGraphNode[];
+  /** Agent topology as directed graph (JSON column: graph_json) */
+  graphJson: SwarmGraphNode[];
 
-  /** Entry point agent ID */
+  /** FK → agents.id — entry point agent */
   entryAgentId: string | null;
 
   /** Maximum iterations to prevent infinite loops */
@@ -102,17 +116,20 @@ export interface SwarmDef {
   createdAt: Date;
   updatedAt: Date;
 
-  /** Expanded relations */
+  /** Expanded relations (NOT in DB row) */
   agents?: Agent[];
   entryAgent?: Agent | null;
 }
 
+// ─── Execution Types ─────────────────────────────────────────────────────────
+
 /**
  * Swarm handoff event.
- * Logged when agents transfer control.
+ * Logged when agents transfer control during execution.
+ * Stored in-memory during a swarm run and emitted via Socket.io / SSE.
  */
 export interface SwarmHandoffEvent {
-  /** Timestamp */
+  /** Event timestamp */
   timestamp: number;
 
   /** Source agent */
@@ -135,6 +152,7 @@ export interface SwarmHandoffEvent {
 
 /**
  * Swarm execution state.
+ * Tracks a running swarm workflow in the SwarmEngine.
  */
 export interface SwarmExecution {
   /** Swarm definition ID */
@@ -171,6 +189,7 @@ export interface SwarmExecution {
 
 /**
  * Swarm execution result.
+ * Returned after a swarm workflow completes.
  */
 export interface SwarmExecutionResult {
   success: boolean;
@@ -183,7 +202,24 @@ export interface SwarmExecutionResult {
 }
 
 /**
+ * Handoff detection result.
+ * Returned by HandoffDetector.evaluate().
+ */
+export interface HandoffDetectionResult {
+  shouldHandoff: boolean;
+  handoff?: {
+    toAgentId: string;
+    toAgentName: string;
+    reason: string;
+    triggeredCondition: HandoffCondition;
+  };
+}
+
+// ─── API Payloads ────────────────────────────────────────────────────────────
+
+/**
  * Swarm creation payload.
+ * POST /api/swarm
  */
 export interface CreateSwarmPayload {
   name: string;
@@ -203,26 +239,18 @@ export interface CreateSwarmPayload {
 
 /**
  * Swarm update payload.
+ * PATCH /api/swarm/[swarmId]
  */
-export type UpdateSwarmPayload = Partial<Omit<CreateSwarmPayload, "agentIds">> & {
+export type UpdateSwarmPayload = Partial<
+  Omit<CreateSwarmPayload, "agentIds">
+> & {
   agentIds?: string[];
 };
 
-/**
- * Handoff detection result.
- */
-export interface HandoffDetectionResult {
-  shouldHandoff: boolean;
-  handoff?: {
-    toAgentId: string;
-    toAgentName: string;
-    reason: string;
-    triggeredCondition: HandoffCondition;
-  };
-}
+// ─── UI / Display Types ──────────────────────────────────────────────────────
 
 /**
- * Swarm visualization node (for UI).
+ * Swarm visualization node (for UI canvas).
  */
 export interface SwarmVisualizationNode {
   id: string;
@@ -237,7 +265,7 @@ export interface SwarmVisualizationNode {
 }
 
 /**
- * Swarm visualization edge (for UI).
+ * Swarm visualization edge (for UI canvas).
  */
 export interface SwarmVisualizationEdge {
   id: string;
@@ -250,7 +278,7 @@ export interface SwarmVisualizationEdge {
 }
 
 /**
- * Swarm builder state (for UI).
+ * Swarm builder state (for UI editor).
  */
 export interface SwarmBuilderState {
   nodes: SwarmGraphNode[];

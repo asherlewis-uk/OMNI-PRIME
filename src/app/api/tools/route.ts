@@ -1,3 +1,5 @@
+export const dynamic = "force-dynamic";
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // TOOLS API - Aggregated Tool Registry Interface
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -37,7 +39,7 @@ export async function GET(request: NextRequest) {
     console.error("[Tools API] Error listing tools:", error);
     return NextResponse.json(
       { error: "Failed to list tools" },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }
@@ -54,7 +56,7 @@ export async function fetchCategorizedTools() {
     console.error("[Tools API] Error getting categories:", error);
     return NextResponse.json(
       { error: "Failed to get tool categories" },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }

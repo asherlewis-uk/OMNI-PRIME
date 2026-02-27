@@ -1,15 +1,15 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// QUEUE DEFINITIONS - BullMQ Queue Setup
+// QUEUE DEFINITIONS — Lazy BullMQ Queue Setup
+//
+// All queues are LAZILY instantiated via getter functions. This prevents the
+// Next.js API route module from crashing on import if Redis is unavailable.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-import { Queue, JobsOptions } from "bullmq";
+import { Queue } from "bullmq";
+import type { JobsOptions } from "bullmq";
 import { getRedisConnection } from "./connection";
-import type { ToolCall } from "@/types/tool";
-import type { SwarmExecution } from "@/types/swarm";
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// QUEUE NAMES
-// ═══════════════════════════════════════════════════════════════════════════════
+// ─── Queue Names ─────────────────────────────────────────────────────────────
 
 export const QUEUE_NAMES = {
   TOOL_EXECUTION: "tool-execution",
@@ -18,369 +18,220 @@ export const QUEUE_NAMES = {
   NOTIFICATION: "notification",
 } as const;
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// JOB TYPES
-// ═══════════════════════════════════════════════════════════════════════════════
+// ─── Job Types ───────────────────────────────────────────────────────────────
 
-/**
- * Tool execution job data.
- */
 export interface ToolExecutionJob {
-  /** Tool call ID from database */
   toolCallId: string;
-
-  /** Server ID */
   serverId: string;
-
-  /** Tool name */
   toolName: string;
-
-  /** Tool arguments */
   arguments: Record<string, unknown>;
-
-  /** Session ID for context */
   sessionId: string;
-
-  /** Message ID this tool call belongs to */
   messageId: string;
-
-  /** Request ID for tracing */
   requestId: string;
 }
 
-/**
- * Swarm execution job data.
- */
 export interface SwarmExecutionJob {
-  /** Swarm definition ID */
   swarmId: string;
-
-  /** Chat session ID */
   sessionId: string;
-
-  /** Initial user message */
   userMessage: string;
-
-  /** Entry agent ID */
   entryAgentId: string;
-
-  /** Execution ID for tracking */
   executionId: string;
-
-  /** Maximum iterations */
   maxIterations: number;
 }
 
-/**
- * Knowledge indexing job data.
- */
 export interface KnowledgeIndexingJob {
-  /** Document ID */
   docId: string;
-
-  /** Owner profile ID */
   ownerId: string;
-
-  /** File path */
   filePath: string;
-
-  /** File type */
   fileType: string;
-
-  /** Chunk size for embeddings */
   chunkSize: number;
-
-  /** Chunk overlap */
   chunkOverlap: number;
 }
 
-/**
- * Notification job data.
- */
 export interface NotificationJob {
-  /** Notification type */
   type: "tool_complete" | "swarm_complete" | "agent_message";
-
-  /** User ID */
   userId: string;
-
-  /** Session ID */
   sessionId: string;
-
-  /** Notification payload */
   payload: Record<string, unknown>;
 }
 
-/**
- * Union of all job types.
- */
 export type JobData =
   | { type: "tool"; data: ToolExecutionJob }
   | { type: "swarm"; data: SwarmExecutionJob }
   | { type: "indexing"; data: KnowledgeIndexingJob }
   | { type: "notification"; data: NotificationJob };
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// QUEUE INSTANCES
-// ═══════════════════════════════════════════════════════════════════════════════
+// ─── Lazy Queue Singletons ───────────────────────────────────────────────────
 
-/**
- * Tool execution queue.
- */
-export const toolQueue = new Queue<ToolExecutionJob>(
-  QUEUE_NAMES.TOOL_EXECUTION,
-  {
-    connection: getRedisConnection(),
-    defaultJobOptions: {
-      attempts: 3,
-      backoff: {
-        type: "exponential",
-        delay: 1000,
+let _toolQueue: Queue<ToolExecutionJob> | null = null;
+let _swarmQueue: Queue<SwarmExecutionJob> | null = null;
+let _indexingQueue: Queue<KnowledgeIndexingJob> | null = null;
+let _notificationQueue: Queue<NotificationJob> | null = null;
+
+export function getToolQueue(): Queue<ToolExecutionJob> {
+  if (!_toolQueue) {
+    _toolQueue = new Queue<ToolExecutionJob>(QUEUE_NAMES.TOOL_EXECUTION, {
+      connection: getRedisConnection(),
+      defaultJobOptions: {
+        attempts: 3,
+        backoff: { type: "exponential", delay: 1000 },
+        removeOnComplete: 100,
+        removeOnFail: 50,
       },
-      removeOnComplete: 100,
-      removeOnFail: 50,
-    },
+    });
   }
-);
+  return _toolQueue;
+}
 
-/**
- * Swarm execution queue.
- */
-export const swarmQueue = new Queue<SwarmExecutionJob>(
-  QUEUE_NAMES.SWARM_EXECUTION,
-  {
-    connection: getRedisConnection(),
-    defaultJobOptions: {
-      attempts: 1,
-      removeOnComplete: 50,
-      removeOnFail: 20,
-    },
-  }
-);
-
-/**
- * Knowledge indexing queue.
- */
-export const indexingQueue = new Queue<KnowledgeIndexingJob>(
-  QUEUE_NAMES.KNOWLEDGE_INDEXING,
-  {
-    connection: getRedisConnection(),
-    defaultJobOptions: {
-      attempts: 2,
-      backoff: {
-        type: "fixed",
-        delay: 5000,
+export function getSwarmQueue(): Queue<SwarmExecutionJob> {
+  if (!_swarmQueue) {
+    _swarmQueue = new Queue<SwarmExecutionJob>(QUEUE_NAMES.SWARM_EXECUTION, {
+      connection: getRedisConnection(),
+      defaultJobOptions: {
+        attempts: 1,
+        removeOnComplete: 50,
+        removeOnFail: 20,
       },
-      removeOnComplete: 50,
-      removeOnFail: 20,
-    },
+    });
   }
-);
+  return _swarmQueue;
+}
 
-/**
- * Notification queue.
- */
-export const notificationQueue = new Queue<NotificationJob>(
-  QUEUE_NAMES.NOTIFICATION,
-  {
-    connection: getRedisConnection(),
-    defaultJobOptions: {
-      attempts: 5,
-      backoff: {
-        type: "exponential",
-        delay: 1000,
+export function getIndexingQueue(): Queue<KnowledgeIndexingJob> {
+  if (!_indexingQueue) {
+    _indexingQueue = new Queue<KnowledgeIndexingJob>(
+      QUEUE_NAMES.KNOWLEDGE_INDEXING,
+      {
+        connection: getRedisConnection(),
+        defaultJobOptions: {
+          attempts: 2,
+          backoff: { type: "fixed", delay: 5000 },
+          removeOnComplete: 50,
+          removeOnFail: 20,
+        },
       },
-      removeOnComplete: 200,
-      removeOnFail: 100,
-    },
+    );
   }
-);
+  return _indexingQueue;
+}
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// JOB ADDERS
-// ═══════════════════════════════════════════════════════════════════════════════
+export function getNotificationQueue(): Queue<NotificationJob> {
+  if (!_notificationQueue) {
+    _notificationQueue = new Queue<NotificationJob>(QUEUE_NAMES.NOTIFICATION, {
+      connection: getRedisConnection(),
+      defaultJobOptions: {
+        attempts: 5,
+        backoff: { type: "exponential", delay: 1000 },
+        removeOnComplete: 200,
+        removeOnFail: 100,
+      },
+    });
+  }
+  return _notificationQueue;
+}
 
-/**
- * Add a tool execution job to the queue.
- */
+// ─── Job Adders ──────────────────────────────────────────────────────────────
+
 export async function addToolExecutionJob(
   data: ToolExecutionJob,
-  options?: JobsOptions
+  options?: JobsOptions,
 ): Promise<string> {
-  const job = await toolQueue.add("execute-tool", data, {
+  const job = await getToolQueue().add("execute-tool", data, {
     priority: 5,
     ...options,
   });
-  return job.id!;
+  return job.id ?? "";
 }
 
-/**
- * Add a swarm execution job to the queue.
- */
 export async function addSwarmExecutionJob(
   data: SwarmExecutionJob,
-  options?: JobsOptions
+  options?: JobsOptions,
 ): Promise<string> {
-  const job = await swarmQueue.add("execute-swarm", data, {
+  const job = await getSwarmQueue().add("execute-swarm", data, {
     priority: 3,
     ...options,
   });
-  return job.id!;
+  return job.id ?? "";
 }
 
-/**
- * Add a knowledge indexing job to the queue.
- */
 export async function addKnowledgeIndexingJob(
   data: KnowledgeIndexingJob,
-  options?: JobsOptions
+  options?: JobsOptions,
 ): Promise<string> {
-  const job = await indexingQueue.add("index-document", data, {
+  const job = await getIndexingQueue().add("index-document", data, {
     priority: 1,
     ...options,
   });
-  return job.id!;
+  return job.id ?? "";
 }
 
-/**
- * Add a notification job to the queue.
- */
 export async function addNotificationJob(
   data: NotificationJob,
-  options?: JobsOptions
+  options?: JobsOptions,
 ): Promise<string> {
-  const job = await notificationQueue.add("send-notification", data, {
+  const job = await getNotificationQueue().add("send-notification", data, {
     priority: 10,
     ...options,
   });
-  return job.id!;
+  return job.id ?? "";
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// QUEUE UTILITIES
-// ═══════════════════════════════════════════════════════════════════════════════
+// ─── Queue Utilities ─────────────────────────────────────────────────────────
 
-/**
- * Get queue status summary.
- */
 export async function getQueueStatus(): Promise<{
   tool: { waiting: number; active: number; completed: number; failed: number };
   swarm: { waiting: number; active: number; completed: number; failed: number };
-  indexing: { waiting: number; active: number; completed: number; failed: number };
-  notification: { waiting: number; active: number; completed: number; failed: number };
+  indexing: {
+    waiting: number;
+    active: number;
+    completed: number;
+    failed: number;
+  };
+  notification: {
+    waiting: number;
+    active: number;
+    completed: number;
+    failed: number;
+  };
 }> {
-  const [
-    toolWaiting,
-    toolActive,
-    toolCompleted,
-    toolFailed,
-    swarmWaiting,
-    swarmActive,
-    swarmCompleted,
-    swarmFailed,
-    indexingWaiting,
-    indexingActive,
-    indexingCompleted,
-    indexingFailed,
-    notificationWaiting,
-    notificationActive,
-    notificationCompleted,
-    notificationFailed,
-  ] = await Promise.all([
-    toolQueue.getWaitingCount(),
-    toolQueue.getActiveCount(),
-    toolQueue.getCompletedCount(),
-    toolQueue.getFailedCount(),
-    swarmQueue.getWaitingCount(),
-    swarmQueue.getActiveCount(),
-    swarmQueue.getCompletedCount(),
-    swarmQueue.getFailedCount(),
-    indexingQueue.getWaitingCount(),
-    indexingQueue.getActiveCount(),
-    indexingQueue.getCompletedCount(),
-    indexingQueue.getFailedCount(),
-    notificationQueue.getWaitingCount(),
-    notificationQueue.getActiveCount(),
-    notificationQueue.getCompletedCount(),
-    notificationQueue.getFailedCount(),
-  ]);
+  const tq = getToolQueue();
+  const sq = getSwarmQueue();
+  const iq = getIndexingQueue();
+  const nq = getNotificationQueue();
+
+  const [tw, ta, tc, tf, sw, sa, sc, sf, iw, ia, ic, iff, nw, na, nc, nf] =
+    await Promise.all([
+      tq.getWaitingCount(),
+      tq.getActiveCount(),
+      tq.getCompletedCount(),
+      tq.getFailedCount(),
+      sq.getWaitingCount(),
+      sq.getActiveCount(),
+      sq.getCompletedCount(),
+      sq.getFailedCount(),
+      iq.getWaitingCount(),
+      iq.getActiveCount(),
+      iq.getCompletedCount(),
+      iq.getFailedCount(),
+      nq.getWaitingCount(),
+      nq.getActiveCount(),
+      nq.getCompletedCount(),
+      nq.getFailedCount(),
+    ]);
 
   return {
-    tool: {
-      waiting: toolWaiting,
-      active: toolActive,
-      completed: toolCompleted,
-      failed: toolFailed,
-    },
-    swarm: {
-      waiting: swarmWaiting,
-      active: swarmActive,
-      completed: swarmCompleted,
-      failed: swarmFailed,
-    },
-    indexing: {
-      waiting: indexingWaiting,
-      active: indexingActive,
-      completed: indexingCompleted,
-      failed: indexingFailed,
-    },
-    notification: {
-      waiting: notificationWaiting,
-      active: notificationActive,
-      completed: notificationCompleted,
-      failed: notificationFailed,
-    },
+    tool: { waiting: tw, active: ta, completed: tc, failed: tf },
+    swarm: { waiting: sw, active: sa, completed: sc, failed: sf },
+    indexing: { waiting: iw, active: ia, completed: ic, failed: iff },
+    notification: { waiting: nw, active: na, completed: nc, failed: nf },
   };
 }
 
-/**
- * Clean all queues (use with caution).
- */
-export async function cleanAllQueues(): Promise<void> {
-  await Promise.all([
-    toolQueue.clean(0, 0, "completed"),
-    toolQueue.clean(0, 0, "failed"),
-    swarmQueue.clean(0, 0, "completed"),
-    swarmQueue.clean(0, 0, "failed"),
-    indexingQueue.clean(0, 0, "completed"),
-    indexingQueue.clean(0, 0, "failed"),
-    notificationQueue.clean(0, 0, "completed"),
-    notificationQueue.clean(0, 0, "failed"),
-  ]);
-}
-
-/**
- * Pause all queues.
- */
-export async function pauseAllQueues(): Promise<void> {
-  await Promise.all([
-    toolQueue.pause(),
-    swarmQueue.pause(),
-    indexingQueue.pause(),
-    notificationQueue.pause(),
-  ]);
-}
-
-/**
- * Resume all queues.
- */
-export async function resumeAllQueues(): Promise<void> {
-  await Promise.all([
-    toolQueue.resume(),
-    swarmQueue.resume(),
-    indexingQueue.resume(),
-    notificationQueue.resume(),
-  ]);
-}
-
-/**
- * Close all queues (for cleanup).
- */
 export async function closeQueues(): Promise<void> {
-  await Promise.all([
-    toolQueue.close(),
-    swarmQueue.close(),
-    indexingQueue.close(),
-    notificationQueue.close(),
-  ]);
+  const queues = [_toolQueue, _swarmQueue, _indexingQueue, _notificationQueue];
+  await Promise.all(queues.filter(Boolean).map((q) => q!.close()));
+  _toolQueue = null;
+  _swarmQueue = null;
+  _indexingQueue = null;
+  _notificationQueue = null;
 }

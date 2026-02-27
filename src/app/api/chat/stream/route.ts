@@ -1,25 +1,32 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// CHAT STREAM API - Server-Sent Events for Real-time Streaming
+// CHAT STREAM API — Server-Sent Events for Real-time Streaming
+// POST /api/chat/stream
+//
+// Server-side only. Uses the SQLite-backed contextInjector (no Dexie).
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import { NextRequest } from "next/server";
+import { v4 as uuidv4 } from "uuid";
 import { getDB } from "@/lib/db/client";
-import { messages, chatSessions, agents, toolCalls, mcpTools } from "@/lib/db/schema";
+import {
+  messages,
+  chatSessions,
+  agents,
+  toolCalls,
+  mcpTools,
+} from "@/lib/db/schema";
 import { eq, desc } from "drizzle-orm";
 import { unifiedGateway } from "@/lib/ai/unifiedGateway";
 import { contextInjector } from "@/lib/ai/contextInjector";
 import { toolRegistry } from "@/lib/mcp/toolRegistry";
 import { addToolExecutionJob } from "@/lib/queue/queues";
 import type { GatewayStreamChunk } from "@/lib/ai/unifiedGateway";
-import crypto from "crypto";
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SSE RESPONSE BUILDER
-// ═══════════════════════════════════════════════════════════════════════════════
+// ─── SSE Response Builder ────────────────────────────────────────────────────
 
 function createSSEResponse(
   generator: AsyncGenerator<string>,
-  onClose?: () => void
+  onClose?: () => void,
 ): Response {
   const encoder = new TextEncoder();
 
@@ -49,75 +56,80 @@ function createSSEResponse(
   });
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// GET /api/chat/stream - SSE endpoint for streaming responses
-// ═══════════════════════════════════════════════════════════════════════════════
+// ─── POST /api/chat/stream ───────────────────────────────────────────────────
 
-export async function GET(request: NextRequest) {
-  const { searchParams } = new URL(request.url);
-  const sessionId = searchParams.get("sessionId");
-  const userMessage = searchParams.get("message");
+export async function POST(request: NextRequest) {
+  let body: { sessionId?: string; content?: string };
+  try {
+    body = (await request.json()) as { sessionId?: string; content?: string };
+  } catch {
+    return new Response(JSON.stringify({ error: "Invalid JSON body" }), {
+      status: 400,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  const { sessionId, content: userMessage } = body;
 
   if (!sessionId) {
-    return new Response(
-      JSON.stringify({ error: "sessionId is required" }),
-      { status: 400, headers: { "Content-Type": "application/json" } }
-    );
+    return new Response(JSON.stringify({ error: "sessionId is required" }), {
+      status: 400,
+      headers: { "Content-Type": "application/json" },
+    });
   }
 
   if (!userMessage) {
-    return new Response(
-      JSON.stringify({ error: "message is required" }),
-      { status: 400, headers: { "Content-Type": "application/json" } }
-    );
+    return new Response(JSON.stringify({ error: "content is required" }), {
+      status: 400,
+      headers: { "Content-Type": "application/json" },
+    });
   }
 
   const abortController = new AbortController();
-  const signal = abortController.signal;
 
-  // Handle client disconnect
   request.signal.addEventListener("abort", () => {
     abortController.abort();
   });
 
-  const generator = streamConversation(sessionId, userMessage, signal);
+  const generator = streamConversation(
+    sessionId,
+    userMessage,
+    abortController.signal,
+  );
 
   return createSSEResponse(generator, () => {
     abortController.abort();
   });
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// STREAM GENERATOR
-// ═══════════════════════════════════════════════════════════════════════════════
+// ─── Stream Generator ────────────────────────────────────────────────────────
 
 async function* streamConversation(
   sessionId: string,
   userMessage: string,
-  signal: AbortSignal
+  signal: AbortSignal,
 ): AsyncGenerator<string> {
-  const db = await getDB();
-  const assistantMessageId = crypto.randomUUID();
+  const db = getDB();
+  const assistantMessageId = uuidv4();
 
   try {
-    // Get session with agent
     const session = await db.query.chatSessions.findFirst({
       where: eq(chatSessions.id, sessionId),
-      with: {
-        agent: true,
-      },
+      with: { agent: true },
     });
 
     if (!session || !session.agent) {
       yield `data: ${JSON.stringify({
         type: "error",
-        error: { code: "SESSION_NOT_FOUND", message: "Session or agent not found" },
+        error: {
+          code: "SESSION_NOT_FOUND",
+          message: "Session or agent not found",
+        },
       })}\n\n`;
       return;
     }
 
-    // Save user message
-    const userMessageId = crypto.randomUUID();
+    const userMessageId = uuidv4();
     await db.insert(messages).values({
       id: userMessageId,
       sessionId,
@@ -127,30 +139,25 @@ async function* streamConversation(
       isComplete: true,
     });
 
-    // Get agent's tools
     const agentTools = await toolRegistry.getAgentTools(session.agent.id);
     const availableTools = toolRegistry.convertToGatewayTools(agentTools);
 
-    // Build system prompt with context injection
+    await contextInjector.ensureLoaded();
     const systemPrompt = contextInjector.buildSystemPrompt(
-      session.agent.systemPrompt
+      session.agent.systemPrompt,
     );
 
-    // Get message history
     const messageHistory = await db.query.messages.findMany({
       where: eq(messages.sessionId, sessionId),
       orderBy: [desc(messages.createdAt)],
       limit: 10,
     });
 
-    const history = messageHistory
-      .reverse()
-      .map((m) => ({
-        role: m.role as "user" | "assistant" | "system" | "tool",
-        content: m.content,
-      }));
+    const history = messageHistory.reverse().map((m) => ({
+      role: m.role as "user" | "assistant" | "system" | "tool",
+      content: m.content,
+    }));
 
-    // Send start event
     yield `data: ${JSON.stringify({
       type: "start",
       id: assistantMessageId,
@@ -159,15 +166,10 @@ async function* streamConversation(
       timestamp: Date.now(),
     })}\n\n`;
 
-    // Initialize assistant message
     let fullContent = "";
-    const pendingToolCalls: {
-      id: string;
-      name: string;
-      arguments: string;
-    }[] = [];
+    const pendingToolCalls: { id: string; name: string; arguments: string }[] =
+      [];
 
-    // Stream from LLM
     const stream = unifiedGateway.streamCompletion({
       model: session.agent.modelPreference,
       messages: [
@@ -181,17 +183,20 @@ async function* streamConversation(
     });
 
     for await (const chunk of stream) {
-      if (signal.aborted) {
-        break;
-      }
-
-      const sseChunk = convertToSSEChunk(chunk, assistantMessageId, sessionId);
+      if (signal.aborted) break;
 
       switch (chunk.type) {
         case "content":
           if (chunk.content) {
             fullContent += chunk.content;
-            yield `data: ${JSON.stringify(sseChunk)}\n\n`;
+            yield `data: ${JSON.stringify({
+              type: "content",
+              id: assistantMessageId,
+              sessionId,
+              messageId: assistantMessageId,
+              content: chunk.content,
+              timestamp: Date.now(),
+            })}\n\n`;
           }
           break;
 
@@ -203,7 +208,6 @@ async function* streamConversation(
               arguments: chunk.toolCall.arguments,
             });
 
-            // Send tool_call event
             yield `data: ${JSON.stringify({
               type: "tool_call",
               id: assistantMessageId,
@@ -211,25 +215,33 @@ async function* streamConversation(
               messageId: assistantMessageId,
               toolCall: {
                 id: chunk.toolCall.id,
-                name: chunk.toolCall.name,
+                toolName: chunk.toolCall.name,
                 arguments: chunk.toolCall.arguments,
               },
               timestamp: Date.now(),
             })}\n\n`;
 
-            // Queue tool execution
             const tool = await db.query.mcpTools.findFirst({
               where: eq(mcpTools.name, chunk.toolCall.name),
             });
 
             if (tool) {
-              const toolCallId = crypto.randomUUID();
+              const toolCallId = uuidv4();
+              let parsedArgs: Record<string, unknown> = {};
+              try {
+                parsedArgs = JSON.parse(
+                  chunk.toolCall.arguments || "{}",
+                ) as Record<string, unknown>;
+              } catch {
+                parsedArgs = {};
+              }
+
               await db.insert(toolCalls).values({
                 id: toolCallId,
                 messageId: assistantMessageId,
                 toolId: tool.id,
                 toolName: chunk.toolCall.name,
-                arguments: JSON.parse(chunk.toolCall.arguments || "{}"),
+                arguments: parsedArgs,
                 status: "pending",
               });
 
@@ -237,30 +249,24 @@ async function* streamConversation(
                 toolCallId,
                 serverId: tool.serverId,
                 toolName: chunk.toolCall.name,
-                arguments: JSON.parse(chunk.toolCall.arguments || "{}"),
+                arguments: parsedArgs,
                 sessionId,
                 messageId: assistantMessageId,
-                requestId: crypto.randomUUID(),
+                requestId: uuidv4(),
               });
-
-              // Send tool_pending event
-              yield `data: ${JSON.stringify({
-                type: "tool_pending",
-                id: assistantMessageId,
-                sessionId,
-                messageId: assistantMessageId,
-                toolCall: {
-                  id: toolCallId,
-                  toolName: chunk.toolCall.name,
-                },
-                timestamp: Date.now(),
-              })}\n\n`;
             }
           }
           break;
 
         case "error":
-          yield `data: ${JSON.stringify(sseChunk)}\n\n`;
+          yield `data: ${JSON.stringify({
+            type: "error",
+            id: assistantMessageId,
+            sessionId,
+            messageId: assistantMessageId,
+            error: chunk.error ?? { code: "UNKNOWN", message: "Unknown error" },
+            timestamp: Date.now(),
+          })}\n\n`;
           return;
 
         case "done":
@@ -268,7 +274,6 @@ async function* streamConversation(
       }
     }
 
-    // Save assistant message to database
     await db.insert(messages).values({
       id: assistantMessageId,
       sessionId,
@@ -282,7 +287,6 @@ async function* streamConversation(
       isComplete: true,
     });
 
-    // Update session
     await db
       .update(chatSessions)
       .set({
@@ -291,7 +295,6 @@ async function* streamConversation(
       })
       .where(eq(chatSessions.id, sessionId));
 
-    // Update agent stats
     await db
       .update(agents)
       .set({
@@ -300,7 +303,6 @@ async function* streamConversation(
       })
       .where(eq(agents.id, session.agent.id));
 
-    // Send complete event
     yield `data: ${JSON.stringify({
       type: "complete",
       id: assistantMessageId,
@@ -308,7 +310,6 @@ async function* streamConversation(
       messageId: assistantMessageId,
       timestamp: Date.now(),
     })}\n\n`;
-
   } catch (error) {
     console.error("[Stream] Error:", error);
 
@@ -323,60 +324,5 @@ async function* streamConversation(
       },
       timestamp: Date.now(),
     })}\n\n`;
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// CONVERSION HELPER
-// ═══════════════════════════════════════════════════════════════════════════════
-
-function convertToSSEChunk(
-  chunk: GatewayStreamChunk,
-  messageId: string,
-  sessionId: string
-): {
-  type: string;
-  id: string;
-  sessionId: string;
-  messageId: string;
-  content?: string;
-  error?: { code: string; message: string };
-  metadata?: { model?: string; provider?: string };
-  timestamp: number;
-} {
-  const base = {
-    id: messageId,
-    sessionId,
-    messageId,
-    timestamp: Date.now(),
-  };
-
-  switch (chunk.type) {
-    case "content":
-      return {
-        ...base,
-        type: "content",
-        content: chunk.content,
-      };
-
-    case "error":
-      return {
-        ...base,
-        type: "error",
-        error: chunk.error ?? { code: "UNKNOWN", message: "Unknown error" },
-      };
-
-    case "done":
-      return {
-        ...base,
-        type: "complete",
-        metadata: chunk.finishReason ? { model: undefined, provider: undefined } : undefined,
-      };
-
-    default:
-      return {
-        ...base,
-        type: chunk.type,
-      };
   }
 }

@@ -1,0 +1,45 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# OMNI-PRIME — Docker Ignore
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Dependencies (rebuilt inside container)
+node_modules
+npm-debug.log*
+
+# Build output
+.next
+out
+dist
+tsconfig.tsbuildinfo
+
+# Git
+.git
+.gitignore
+
+# Environment (secrets — injected via docker-compose env)
+.env
+.env.*
+
+# IDE / OS
+.vscode
+.idea
+*.swp
+*.swo
+*~
+Thumbs.db
+.DS_Store
+
+# Capacitor native builds
+android
+ios
+
+# Docker (prevent recursive context)
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Documentation (not needed in image)
+AGENTS.md
+system-architecture.md
+.windsurfrules
+.windsurf/

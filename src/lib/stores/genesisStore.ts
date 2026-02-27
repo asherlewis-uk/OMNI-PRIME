@@ -2,6 +2,7 @@
 // GENESIS STORE - Zustand State Management for Onboarding
 // ═══════════════════════════════════════════════════════════════════════════════
 
+import { useMemo } from "react";
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
 import { persist, createJSONStorage } from "zustand/middleware";
@@ -399,7 +400,7 @@ export const useGenesisStore = create<GenesisStore>()(
             }, 500);
 
             // Call API to complete onboarding
-            const response = await fetch("/api/onboarding/complete", {
+            const response = await fetch("/api/genesis", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ genesisData }),
@@ -469,9 +470,7 @@ export const useGenesisStore = create<GenesisStore>()(
           const baseProgress = (currentStep / totalSteps) * 100;
 
           // Add partial progress for current step if it can proceed
-          const partialProgress = canProceedToNext()
-            ? 100 / totalSteps / 2
-            : 0;
+          const partialProgress = canProceedToNext() ? 100 / totalSteps / 2 : 0;
 
           return Math.min(100, Math.round(baseProgress + partialProgress));
         },
@@ -490,16 +489,14 @@ export const useGenesisStore = create<GenesisStore>()(
           isComplete: state.isComplete,
           completedSteps: state.completedSteps,
         }),
-      }
-    )
-  )
+      },
+    ),
+  ),
 );
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SELECTOR HOOKS
 // ═══════════════════════════════════════════════════════════════════════════════
-
-import { useMemo } from "react";
 
 /**
  * Get current step data.
@@ -539,7 +536,7 @@ export function useStepValidation(): Record<number, string | null> {
     return {
       0: answers.useCase ? null : "Please select a role",
       1:
-        answers.objectives?.length ?? 0 > 0
+        (answers.objectives?.length ?? 0 > 0)
           ? null
           : "Please select at least one objective",
       2: null, // Tools are optional

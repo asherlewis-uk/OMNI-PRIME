@@ -1,148 +1,95 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// QUEUE CONNECTION - Redis Connection Management for BullMQ
+// QUEUE CONNECTION — Lazy Redis Connection Management for BullMQ
+//
+// Default: redis://redis:6379 (Docker service name on ai-stack-net bridge).
+// Override via REDIS_URL environment variable.
+// All connections are LAZY — created only on first access.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import { Redis } from "ioredis";
-import type { RedisOptions } from "ioredis";
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// CONFIGURATION
-// ═══════════════════════════════════════════════════════════════════════════════
+// ─── Lazy Connection State ───────────────────────────────────────────────────
 
-const REDIS_URL = process.env.REDIS_URL ?? "redis://localhost:6379";
-const REDIS_HOST = process.env.REDIS_HOST ?? "localhost";
-const REDIS_PORT = parseInt(process.env.REDIS_PORT ?? "6379", 10);
-const REDIS_PASSWORD = process.env.REDIS_PASSWORD;
+let _connection: Redis | null = null;
+let _publisher: Redis | null = null;
+let _subscriber: Redis | null = null;
+let _isShuttingDown = false;
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// CONNECTION STATE
-// ═══════════════════════════════════════════════════════════════════════════════
+// ─── Connection Factory ──────────────────────────────────────────────────────
 
-let redisConnection: Redis | null = null;
-let redisPublisher: Redis | null = null;
-let redisSubscriber: Redis | null = null;
-let isShuttingDown = false;
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// CONNECTION FACTORY
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/**
- * Parse Redis URL or use individual config.
- */
-function getRedisConfig():
-  | { url: string; options?: never }
-  | { url?: never; options: RedisOptions } {
-  if (REDIS_URL && REDIS_URL !== "redis://localhost:6379") {
-    return { url: REDIS_URL };
-  }
-
-  return {
-    options: {
-      host: REDIS_HOST,
-      port: REDIS_PORT,
-      password: REDIS_PASSWORD,
-      maxRetriesPerRequest: null, // Required for BullMQ
-      enableReadyCheck: false, // Required for BullMQ
-    },
-  };
+function resolveRedisUrl(): string {
+  return process.env.REDIS_URL ?? "redis://redis:6379";
 }
 
-/**
- * Create a new Redis connection with error handling.
- */
-function createRedisConnection(): Redis {
-  const config = getRedisConfig();
+function createConnection(): Redis {
+  const url = resolveRedisUrl();
 
-  const redis = config.url
-    ? new Redis(config.url, {
-        maxRetriesPerRequest: null,
-        enableReadyCheck: false,
-      })
-    : new Redis(config.options!);
-
-  // Event handlers
-  redis.on("connect", () => {
-    if (process.env.NODE_ENV === "development") {
-      console.log("✅ Redis connected");
-    }
+  const redis = new Redis(url, {
+    maxRetriesPerRequest: null,
+    enableReadyCheck: false,
+    retryStrategy(times: number) {
+      if (_isShuttingDown) return null;
+      return Math.min(times * 200, 5000);
+    },
+    lazyConnect: true,
   });
 
-  redis.on("ready", () => {
+  redis.on("connect", () => {
     if (process.env.NODE_ENV === "development") {
-      console.log("✅ Redis ready");
+      console.log("[Redis] Connected to", url);
     }
   });
 
   redis.on("error", (error) => {
-    if (!isShuttingDown) {
-      console.error("❌ Redis error:", error.message);
-    }
-  });
-
-  redis.on("close", () => {
-    if (!isShuttingDown && process.env.NODE_ENV === "development") {
-      console.log("⚠️  Redis connection closed");
+    if (!_isShuttingDown) {
+      console.error("[Redis] Error:", error.message);
     }
   });
 
   redis.on("reconnecting", () => {
     if (process.env.NODE_ENV === "development") {
-      console.log("🔄 Redis reconnecting...");
+      console.log("[Redis] Reconnecting...");
+    }
+  });
+
+  redis.connect().catch((err) => {
+    if (!_isShuttingDown) {
+      console.error("[Redis] Initial connection failed:", err.message);
     }
   });
 
   return redis;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// CONNECTION GETTERS
-// ═══════════════════════════════════════════════════════════════════════════════
+// ─── Connection Getters (Lazy) ───────────────────────────────────────────────
 
-/**
- * Get the main Redis connection for BullMQ.
- */
 export function getRedisConnection(): Redis {
-  if (!redisConnection || redisConnection.status === "end") {
-    redisConnection = createRedisConnection();
+  if (!_connection || _connection.status === "end") {
+    _connection = createConnection();
   }
-  return redisConnection;
+  return _connection;
 }
 
-/**
- * Get a Redis connection for publishing.
- */
 export function getRedisPublisher(): Redis {
-  if (!redisPublisher || redisPublisher.status === "end") {
-    redisPublisher = createRedisConnection();
+  if (!_publisher || _publisher.status === "end") {
+    _publisher = createConnection();
   }
-  return redisPublisher;
+  return _publisher;
 }
 
-/**
- * Get a Redis connection for subscribing.
- */
 export function getRedisSubscriber(): Redis {
-  if (!redisSubscriber || redisSubscriber.status === "end") {
-    redisSubscriber = createRedisConnection();
+  if (!_subscriber || _subscriber.status === "end") {
+    _subscriber = createConnection();
   }
-  return redisSubscriber;
+  return _subscriber;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// HEALTH CHECKS
-// ═══════════════════════════════════════════════════════════════════════════════
+// ─── Health Checks ───────────────────────────────────────────────────────────
 
-/**
- * Check if Redis is connected.
- */
 export function isRedisConnected(): boolean {
-  return redisConnection?.status === "ready";
+  return _connection?.status === "ready";
 }
 
-/**
- * Ping Redis to verify connectivity.
- */
 export async function pingRedis(): Promise<boolean> {
   try {
     const redis = getRedisConnection();
@@ -153,68 +100,36 @@ export async function pingRedis(): Promise<boolean> {
   }
 }
 
-/**
- * Get Redis server info.
- */
-export async function getRedisInfo(): Promise<Record<string, string> | null> {
-  try {
-    const redis = getRedisConnection();
-    const info = await redis.info();
-    const lines = info.split("\r\n");
-    const result: Record<string, string> = {};
+// ─── Graceful Shutdown ───────────────────────────────────────────────────────
 
-    for (const line of lines) {
-      if (line.includes(":")) {
-        const [key, value] = line.split(":");
-        if (key && value) {
-          result[key] = value;
-        }
-      }
-    }
-
-    return result;
-  } catch {
-    return null;
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// GRACEFUL SHUTDOWN
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/**
- * Close all Redis connections gracefully.
- */
 export async function closeRedisConnections(): Promise<void> {
-  isShuttingDown = true;
+  _isShuttingDown = true;
 
-  const closeConnection = async (redis: Redis | null, name: string) => {
+  const close = async (redis: Redis | null, name: string) => {
     if (redis && redis.status !== "end") {
       try {
         await redis.quit();
         if (process.env.NODE_ENV === "development") {
-          console.log(`✅ Redis ${name} connection closed`);
+          console.log(`[Redis] ${name} closed`);
         }
       } catch (error) {
-        console.error(`❌ Error closing Redis ${name}:`, error);
+        console.error(`[Redis] Error closing ${name}:`, error);
       }
     }
   };
 
   await Promise.all([
-    closeConnection(redisConnection, "main"),
-    closeConnection(redisPublisher, "publisher"),
-    closeConnection(redisSubscriber, "subscriber"),
+    close(_connection, "main"),
+    close(_publisher, "publisher"),
+    close(_subscriber, "subscriber"),
   ]);
 
-  redisConnection = null;
-  redisPublisher = null;
-  redisSubscriber = null;
+  _connection = null;
+  _publisher = null;
+  _subscriber = null;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// PROCESS HANDLERS
-// ═══════════════════════════════════════════════════════════════════════════════
+// ─── Process Handlers ────────────────────────────────────────────────────────
 
 process.on("SIGINT", async () => {
   await closeRedisConnections();
@@ -224,8 +139,4 @@ process.on("SIGINT", async () => {
 process.on("SIGTERM", async () => {
   await closeRedisConnections();
   process.exit(0);
-});
-
-process.on("beforeExit", async () => {
-  await closeRedisConnections();
 });

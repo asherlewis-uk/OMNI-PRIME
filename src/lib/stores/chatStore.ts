@@ -1,7 +1,8 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// CHAT STORE - Zustand State Management for Chat Sessions
+// CHAT STORE — Zustand State Management for Chat Sessions
 // ═══════════════════════════════════════════════════════════════════════════════
 
+import { useMemo } from "react";
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
 import { persist, createJSONStorage } from "zustand/middleware";
@@ -29,8 +30,9 @@ interface StreamState {
   messageId: string | null;
   sessionId: string | null;
   error: string | null;
-  abortController: AbortController | null;
 }
+
+let _abortController: AbortController | null = null;
 
 /**
  * Chat store state.
@@ -82,12 +84,12 @@ interface ChatActions {
   updateMessage: (
     sessionId: string,
     messageId: string,
-    updates: Partial<MessageWithUIState>
+    updates: Partial<MessageWithUIState>,
   ) => void;
   appendMessageContent: (
     sessionId: string,
     messageId: string,
-    content: string
+    content: string,
   ) => void;
   clearMessages: (sessionId: string) => void;
 
@@ -117,7 +119,7 @@ interface ChatActions {
   getCurrentMessages: () => MessageWithUIState[];
   getMessageById: (
     sessionId: string,
-    messageId: string
+    messageId: string,
   ) => MessageWithUIState | undefined;
   clearError: () => void;
   reset: () => void;
@@ -137,7 +139,6 @@ const initialStreamState: StreamState = {
   messageId: null,
   sessionId: null,
   error: null,
-  abortController: null,
 };
 
 const initialState: ChatState = {
@@ -185,7 +186,10 @@ export const useChatStore = create<ChatStore>()(
           set((state) => {
             const index = state.sessions.findIndex((s) => s.id === sessionId);
             if (index !== -1) {
-              state.sessions[index] = { ...state.sessions[index], ...updates } as ChatSession;
+              state.sessions[index] = {
+                ...state.sessions[index],
+                ...updates,
+              } as ChatSession;
             }
           });
         },
@@ -307,7 +311,9 @@ export const useChatStore = create<ChatStore>()(
           });
 
           try {
-            const response = await fetch(`/api/chat/sessions/${sessionId}/messages`);
+            const response = await fetch(
+              `/api/chat/sessions/${sessionId}/messages`,
+            );
             if (!response.ok) {
               throw new Error("Failed to fetch messages");
             }
@@ -317,7 +323,9 @@ export const useChatStore = create<ChatStore>()(
           } catch (error) {
             set((state) => {
               state.error =
-                error instanceof Error ? error.message : "Failed to load messages";
+                error instanceof Error
+                  ? error.message
+                  : "Failed to load messages";
             });
           } finally {
             set((state) => {
@@ -468,10 +476,7 @@ export const useChatStore = create<ChatStore>()(
           get().clearAttachments();
 
           // Create abort controller for cancellation
-          const abortController = new AbortController();
-          set((state) => {
-            state.stream.abortController = abortController;
-          });
+          _abortController = new AbortController();
 
           try {
             // Start streaming
@@ -483,7 +488,7 @@ export const useChatStore = create<ChatStore>()(
                 content,
                 attachments: payload.attachments,
               }),
-              signal: abortController.signal,
+              signal: _abortController.signal,
             });
 
             if (!response.ok) {
@@ -528,6 +533,7 @@ export const useChatStore = create<ChatStore>()(
               });
             }
           } finally {
+            _abortController = null;
             set((state) => {
               state.isSending = false;
               state.stream = { ...initialStreamState };
@@ -536,8 +542,8 @@ export const useChatStore = create<ChatStore>()(
         },
 
         abortStream: () => {
-          const { abortController } = get().stream;
-          abortController?.abort();
+          _abortController?.abort();
+          _abortController = null;
         },
 
         // ═══════════════════════════════════════════════════════════════════════
@@ -555,21 +561,68 @@ export const useChatStore = create<ChatStore>()(
                 get().appendMessageContent(
                   chunk.sessionId,
                   chunk.messageId,
-                  chunk.content
+                  chunk.content,
                 );
               }
               break;
 
             case "tool_call":
-              // Handle tool call notification
+              if (chunk.toolCall) {
+                set((state) => {
+                  const msgs = state.messages[chunk.sessionId];
+                  const msg = msgs?.find((m) => m.id === chunk.messageId);
+                  if (msg) {
+                    if (!msg.metadata.hasToolCalls) {
+                      msg.metadata.hasToolCalls = true;
+                      msg.metadata.toolCallIds = [];
+                    }
+                    msg.metadata.toolCallIds?.push(chunk.toolCall!.id);
+                    msg.showToolDetails = true;
+                  }
+                });
+              }
               break;
 
             case "tool_result":
-              // Handle tool result
+              if (chunk.toolResult) {
+                set((state) => {
+                  const msgs = state.messages[chunk.sessionId];
+                  const msg = msgs?.find((m) => m.id === chunk.messageId);
+                  if (msg) {
+                    msg.metadata.custom = {
+                      ...msg.metadata.custom,
+                      [`toolResult_${chunk.toolResult!.toolCallId}`]:
+                        chunk.toolResult,
+                    };
+                  }
+                });
+              }
               break;
 
             case "handoff":
-              // Handle swarm handoff
+              if (chunk.handoff) {
+                set((state) => {
+                  const msgs = state.messages[chunk.sessionId];
+                  if (msgs) {
+                    msgs.push({
+                      id: `handoff-${Date.now()}`,
+                      sessionId: chunk.sessionId,
+                      role: "system",
+                      content: `[Handoff: ${chunk.handoff!.fromAgentName} \u2192 ${chunk.handoff!.toAgentName}] ${chunk.handoff!.reason}`,
+                      agentId: null,
+                      metadata: { swarmHandoff: chunk.handoff },
+                      promptTokens: null,
+                      completionTokens: null,
+                      totalTokens: null,
+                      isComplete: true,
+                      createdAt: new Date(),
+                      isStreaming: false,
+                      streamingContent: "",
+                      showToolDetails: false,
+                    });
+                  }
+                });
+              }
               break;
 
             case "error":
@@ -597,7 +650,7 @@ export const useChatStore = create<ChatStore>()(
             }
 
             const existingIndex = state.messages[sessionId].findIndex(
-              (m) => m.id === messageId
+              (m) => m.id === messageId,
             );
 
             if (existingIndex === -1) {
@@ -696,18 +749,14 @@ export const useChatStore = create<ChatStore>()(
           sessions: state.sessions,
           currentSessionId: state.currentSessionId,
         }),
-      }
-    )
-  )
+      },
+    ),
+  ),
 );
-
-
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SELECTOR HOOKS
 // ═══════════════════════════════════════════════════════════════════════════════
-
-import { useMemo } from "react";
 
 /**
  * Get active (non-archived) sessions sorted by last message.
@@ -721,7 +770,7 @@ export function useActiveSessions(): ChatSession[] {
       .sort(
         (a, b) =>
           (b.lastMessageAt?.getTime() ?? b.createdAt.getTime()) -
-          (a.lastMessageAt?.getTime() ?? a.createdAt.getTime())
+          (a.lastMessageAt?.getTime() ?? a.createdAt.getTime()),
       );
   }, [sessions]);
 }

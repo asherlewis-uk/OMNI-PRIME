@@ -5,6 +5,7 @@
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
 import { persist, createJSONStorage } from "zustand/middleware";
+import { useMemo } from "react";
 import type {
   Agent,
   AgentWithDetails,
@@ -63,7 +64,7 @@ interface AgentActions {
   createAgent: (payload: CreateAgentPayload) => Promise<Agent | null>;
   updateAgentDetails: (
     agentId: string,
-    payload: UpdateAgentPayload
+    payload: UpdateAgentPayload,
   ) => Promise<void>;
   deleteAgent: (agentId: string) => Promise<void>;
   duplicateAgent: (agentId: string) => Promise<Agent | null>;
@@ -147,7 +148,10 @@ export const useAgentStore = create<AgentStore>()(
           set((state) => {
             const index = state.agents.findIndex((a) => a.id === agentId);
             if (index !== -1) {
-              state.agents[index] = { ...state.agents[index], ...updates } as Agent;
+              state.agents[index] = {
+                ...state.agents[index],
+                ...updates,
+              } as Agent;
             }
             if (state.currentAgent?.id === agentId) {
               state.currentAgent = { ...state.currentAgent, ...updates };
@@ -452,7 +456,7 @@ export const useAgentStore = create<AgentStore>()(
             await get().updateAgentDetails(editingAgentId, editorDraft);
           } else {
             const newAgent = await get().createAgent(
-              editorDraft as CreateAgentPayload
+              editorDraft as CreateAgentPayload,
             );
             if (newAgent) {
               set((state) => {
@@ -494,16 +498,14 @@ export const useAgentStore = create<AgentStore>()(
           filters: state.filters,
           searchQuery: state.searchQuery,
         }),
-      }
-    )
-  )
+      },
+    ),
+  ),
 );
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SELECTOR HOOKS
 // ═══════════════════════════════════════════════════════════════════════════════
-
-import { useMemo } from "react";
 
 /**
  * Get filtered and sorted agents.
@@ -535,7 +537,7 @@ export function useFilteredAgents(): Agent[] {
       result = result.filter(
         (a) =>
           a.name.toLowerCase().includes(query) ||
-          a.description?.toLowerCase().includes(query)
+          a.description?.toLowerCase().includes(query),
       );
     }
 

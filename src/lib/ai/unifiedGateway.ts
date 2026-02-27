@@ -1,41 +1,33 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// UNIFIED AI GATEWAY - Hybrid-Engine for Local and Cloud LLMs
+// UNIFIED AI GATEWAY — Local-First LLM Router
+//
+// Sovereignty: Ollama is the PRIMARY and DEFAULT provider.
+// Cloud providers (OpenAI, Anthropic) are optional BYOK overlays that must be
+// explicitly enabled via enableCloudProvider(). They do NOT auto-initialize
+// from environment variables alone.
+//
+// Ollama endpoint: http://host.docker.internal:11434 (ai-stack-net bridge)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import OpenAI from "openai";
-import type { StreamChunk } from "@/types/chat";
 import type { MCPTool } from "@/types/tool";
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// TYPES
-// ═══════════════════════════════════════════════════════════════════════════════
+// ─── Types ───────────────────────────────────────────────────────────────────
 
-/**
- * Supported LLM providers.
- */
-export type LLMProvider = "ollama" | "openai" | "anthropic" | "custom";
+export type LLMProvider = "ollama" | "openai" | "anthropic";
 
-/**
- * Message format for gateway (normalized across providers).
- */
 export interface GatewayMessage {
   role: "system" | "user" | "assistant" | "tool";
   content: string;
   tool_calls?: {
     id: string;
     type: "function";
-    function: {
-      name: string;
-      arguments: string;
-    };
+    function: { name: string; arguments: string };
   }[];
   tool_call_id?: string;
   name?: string;
 }
 
-/**
- * Tool definition for LLM function calling.
- */
 export interface GatewayTool {
   type: "function";
   function: {
@@ -45,47 +37,23 @@ export interface GatewayTool {
   };
 }
 
-/**
- * Completion request parameters.
- */
 export interface CompletionRequest {
-  /** Provider to use */
   provider?: LLMProvider;
-
-  /** Model identifier (provider-specific) */
   model: string;
-
-  /** Message history */
   messages: GatewayMessage[];
-
-  /** Available tools for function calling */
   tools?: GatewayTool[];
-
-  /** Whether to require tool calls */
-  toolChoice?: "auto" | "none" | { type: "function"; function: { name: string } };
-
-  /** Temperature (0.0 - 1.0) */
+  toolChoice?:
+    | "auto"
+    | "none"
+    | { type: "function"; function: { name: string } };
   temperature?: number;
-
-  /** Maximum tokens to generate */
   maxTokens?: number;
-
-  /** Top-p sampling */
   topP?: number;
-
-  /** Stop sequences */
   stop?: string[];
-
-  /** Session ID for tracking */
   sessionId?: string;
-
-  /** Abort signal for cancellation */
   signal?: AbortSignal;
 }
 
-/**
- * Completion response (non-streaming).
- */
 export interface CompletionResponse {
   content: string;
   toolCalls?: {
@@ -103,9 +71,6 @@ export interface CompletionResponse {
   finishReason: "stop" | "length" | "tool_calls" | "content_filter";
 }
 
-/**
- * Stream chunk from unified gateway.
- */
 export interface GatewayStreamChunk {
   type: "content" | "tool_call" | "usage" | "error" | "done";
   content?: string;
@@ -121,63 +86,57 @@ export interface GatewayStreamChunk {
     completionTokens?: number;
     totalTokens?: number;
   };
-  error?: {
-    code: string;
-    message: string;
-  };
+  error?: { code: string; message: string };
   finishReason?: "stop" | "length" | "tool_calls" | "content_filter";
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// CONFIGURATION
-// ═══════════════════════════════════════════════════════════════════════════════
+// ─── Configuration ───────────────────────────────────────────────────────────
 
-const OLLAMA_BASE_URL = process.env.OLLAMA_URL || "http://host.docker.internal:11434";
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
+const OLLAMA_BASE_URL =
+  process.env.OLLAMA_URL ?? "http://host.docker.internal:11434";
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// UNIFIED GATEWAY CLASS
-// ═══════════════════════════════════════════════════════════════════════════════
+// ─── Unified Gateway Class ───────────────────────────────────────────────────
 
 export class UnifiedGateway {
   private openaiClient: OpenAI | null = null;
+  private openaiEnabled = false;
+  private anthropicEnabled = false;
+  private anthropicKey = "";
 
-  constructor() {
-    // Initialize OpenAI client if API key is available
-    if (OPENAI_API_KEY) {
-      this.openaiClient = new OpenAI({
-        apiKey: OPENAI_API_KEY,
-      });
+  /**
+   * Explicitly enable a cloud provider. Cloud providers do NOT auto-initialize.
+   * This is the BYOK opt-in gate.
+   */
+  enableCloudProvider(provider: "openai" | "anthropic", apiKey: string): void {
+    if (!apiKey) return;
+
+    if (provider === "openai") {
+      this.openaiClient = new OpenAI({ apiKey });
+      this.openaiEnabled = true;
+    } else if (provider === "anthropic") {
+      this.anthropicKey = apiKey;
+      this.anthropicEnabled = true;
     }
   }
 
   /**
-   * Detect provider from model string.
+   * Detect provider from model string. Defaults to Ollama (sovereignty).
    */
   private detectProvider(model: string): LLMProvider {
-    if (model.startsWith("ollama/") || model.startsWith("local/")) {
-      return "ollama";
-    }
-    if (model.startsWith("gpt-") || model.startsWith("openai/")) {
+    if (model.startsWith("gpt-") || model.startsWith("openai/"))
       return "openai";
-    }
-    if (model.startsWith("claude-") || model.startsWith("anthropic/")) {
+    if (model.startsWith("claude-") || model.startsWith("anthropic/"))
       return "anthropic";
-    }
-    // Default to Ollama for unknown models
     return "ollama";
   }
 
   /**
-   * Normalize model name (remove provider prefix).
+   * Strip provider prefix from model name.
    */
-  private normalizeModel(model: string, provider: LLMProvider): string {
+  private normalizeModel(model: string): string {
     const prefixes = ["ollama/", "local/", "openai/", "anthropic/"];
     for (const prefix of prefixes) {
-      if (model.startsWith(prefix)) {
-        return model.slice(prefix.length);
-      }
+      if (model.startsWith(prefix)) return model.slice(prefix.length);
     }
     return model;
   }
@@ -186,22 +145,23 @@ export class UnifiedGateway {
    * Convert MCP tools to gateway tool format.
    */
   convertTools(mcpTools: MCPTool[]): GatewayTool[] {
-    return mcpTools.map((tool): GatewayTool => ({
-      type: "function",
-      function: {
-        name: tool.name,
-        description: tool.description || `Execute ${tool.name}`,
-        parameters: tool.inputSchema,
-      },
-    }));
+    return mcpTools.map(
+      (tool): GatewayTool => ({
+        type: "function",
+        function: {
+          name: tool.name,
+          description: tool.description ?? `Execute ${tool.name}`,
+          parameters: tool.inputSchema,
+        },
+      }),
+    );
   }
 
-  /**
-   * Complete a non-streaming request.
-   */
+  // ─── Public API ────────────────────────────────────────────────────────────
+
   async complete(request: CompletionRequest): Promise<CompletionResponse> {
-    const provider = request.provider || this.detectProvider(request.model);
-    const model = this.normalizeModel(request.model, provider);
+    const provider = request.provider ?? this.detectProvider(request.model);
+    const model = this.normalizeModel(request.model);
 
     switch (provider) {
       case "ollama":
@@ -209,20 +169,19 @@ export class UnifiedGateway {
       case "openai":
         return this.completeOpenAI({ ...request, model });
       case "anthropic":
-        return this.completeAnthropic({ ...request, model });
+        throw new Error(
+          "Anthropic provider is not yet implemented. Use Ollama for local-first operation.",
+        );
       default:
         throw new Error(`Unsupported provider: ${provider}`);
     }
   }
 
-  /**
-   * Stream a completion request.
-   */
   async *streamCompletion(
-    request: CompletionRequest
+    request: CompletionRequest,
   ): AsyncGenerator<GatewayStreamChunk> {
-    const provider = request.provider || this.detectProvider(request.model);
-    const model = this.normalizeModel(request.model, provider);
+    const provider = request.provider ?? this.detectProvider(request.model);
+    const model = this.normalizeModel(request.model);
 
     switch (provider) {
       case "ollama":
@@ -232,7 +191,14 @@ export class UnifiedGateway {
         yield* this.streamOpenAI({ ...request, model });
         break;
       case "anthropic":
-        yield* this.streamAnthropic({ ...request, model });
+        yield {
+          type: "error",
+          error: {
+            code: "NOT_IMPLEMENTED",
+            message:
+              "Anthropic streaming is not yet implemented. Route to Ollama.",
+          },
+        };
         break;
       default:
         yield {
@@ -245,12 +211,10 @@ export class UnifiedGateway {
     }
   }
 
-  // ═════════════════════════════════════════════════════════════════════════════
-  // OLLAMA IMPLEMENTATION
-  // ═════════════════════════════════════════════════════════════════════════════
+  // ─── Ollama Implementation ─────────────────────────────────────────────────
 
   private async completeOllama(
-    request: CompletionRequest & { model: string }
+    request: CompletionRequest & { model: string },
   ): Promise<CompletionResponse> {
     const response = await fetch(`${OLLAMA_BASE_URL}/api/chat`, {
       method: "POST",
@@ -274,8 +238,8 @@ export class UnifiedGateway {
     });
 
     if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`Ollama error: ${error}`);
+      const errorText = await response.text();
+      throw new Error(`Ollama error (${response.status}): ${errorText}`);
     }
 
     const data = (await response.json()) as {
@@ -283,10 +247,7 @@ export class UnifiedGateway {
         content: string;
         role: string;
         tool_calls?: {
-          function: {
-            name: string;
-            arguments: Record<string, unknown>;
-          };
+          function: { name: string; arguments: Record<string, unknown> };
         }[];
       };
       done: boolean;
@@ -313,7 +274,7 @@ export class UnifiedGateway {
   }
 
   private async *streamOllama(
-    request: CompletionRequest & { model: string }
+    request: CompletionRequest & { model: string },
   ): AsyncGenerator<GatewayStreamChunk> {
     const response = await fetch(`${OLLAMA_BASE_URL}/api/chat`, {
       method: "POST",
@@ -337,13 +298,10 @@ export class UnifiedGateway {
     });
 
     if (!response.ok) {
-      const error = await response.text();
+      const errorText = await response.text();
       yield {
         type: "error",
-        error: {
-          code: "OLLAMA_ERROR",
-          message: error,
-        },
+        error: { code: "OLLAMA_ERROR", message: errorText },
       };
       return;
     }
@@ -352,10 +310,7 @@ export class UnifiedGateway {
     if (!reader) {
       yield {
         type: "error",
-        error: {
-          code: "STREAM_ERROR",
-          message: "Failed to get response reader",
-        },
+        error: { code: "STREAM_ERROR", message: "No response body reader" },
       };
       return;
     }
@@ -370,11 +325,10 @@ export class UnifiedGateway {
 
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
+        buffer = lines.pop() ?? "";
 
         for (const line of lines) {
           if (!line.trim()) continue;
-
           try {
             const chunk = JSON.parse(line) as {
               message?: {
@@ -392,10 +346,7 @@ export class UnifiedGateway {
             };
 
             if (chunk.message?.content) {
-              yield {
-                type: "content",
-                content: chunk.message.content,
-              };
+              yield { type: "content", content: chunk.message.content };
             }
 
             if (chunk.message?.tool_calls) {
@@ -425,7 +376,7 @@ export class UnifiedGateway {
               yield { type: "done", finishReason: "stop" };
             }
           } catch {
-            // Skip malformed JSON lines
+            // Skip malformed NDJSON lines
           }
         }
       }
@@ -434,15 +385,15 @@ export class UnifiedGateway {
     }
   }
 
-  // ═════════════════════════════════════════════════════════════════════════════
-  // OPENAI IMPLEMENTATION
-  // ═════════════════════════════════════════════════════════════════════════════
+  // ─── OpenAI Implementation (BYOK only) ────────────────────────────────────
 
   private async completeOpenAI(
-    request: CompletionRequest & { model: string }
+    request: CompletionRequest & { model: string },
   ): Promise<CompletionResponse> {
-    if (!this.openaiClient) {
-      throw new Error("OpenAI client not initialized - API key missing");
+    if (!this.openaiClient || !this.openaiEnabled) {
+      throw new Error(
+        "OpenAI is not enabled. Call enableCloudProvider('openai', apiKey) first.",
+      );
     }
 
     const response = await this.openaiClient.chat.completions.create({
@@ -457,12 +408,10 @@ export class UnifiedGateway {
     });
 
     const choice = response.choices[0];
-    if (!choice) {
-      throw new Error("No response from OpenAI");
-    }
+    if (!choice) throw new Error("No response from OpenAI");
 
     return {
-      content: choice.message.content || "",
+      content: choice.message.content ?? "",
       toolCalls: choice.message.tool_calls?.map((tc) => ({
         id: tc.id,
         name: tc.function.name,
@@ -480,14 +429,14 @@ export class UnifiedGateway {
   }
 
   private async *streamOpenAI(
-    request: CompletionRequest & { model: string }
+    request: CompletionRequest & { model: string },
   ): AsyncGenerator<GatewayStreamChunk> {
-    if (!this.openaiClient) {
+    if (!this.openaiClient || !this.openaiEnabled) {
       yield {
         type: "error",
         error: {
-          code: "OPENAI_NOT_INITIALIZED",
-          message: "OpenAI client not initialized - API key missing",
+          code: "OPENAI_NOT_ENABLED",
+          message: "OpenAI BYOK not enabled",
         },
       };
       return;
@@ -512,30 +461,18 @@ export class UnifiedGateway {
       const delta = chunk.choices[0]?.delta;
       if (!delta) continue;
 
-      // Handle content
       if (delta.content) {
-        yield {
-          type: "content",
-          content: delta.content,
-        };
+        yield { type: "content", content: delta.content };
       }
 
-      // Handle tool calls
       if (delta.tool_calls) {
         for (const tc of delta.tool_calls) {
-          const id = tc.id || `call_${Date.now()}`;
-
-          if (!toolCallBuffers[id]) {
+          const id = tc.id ?? `call_${Date.now()}`;
+          if (!toolCallBuffers[id])
             toolCallBuffers[id] = { name: "", arguments: "" };
-          }
-
-          if (tc.function?.name) {
-            toolCallBuffers[id].name += tc.function.name;
-          }
-
-          if (tc.function?.arguments) {
+          if (tc.function?.name) toolCallBuffers[id].name += tc.function.name;
+          if (tc.function?.arguments)
             toolCallBuffers[id].arguments += tc.function.arguments;
-          }
 
           const isComplete =
             toolCallBuffers[id].name &&
@@ -555,7 +492,6 @@ export class UnifiedGateway {
         }
       }
 
-      // Handle finish reason
       if (chunk.choices[0]?.finish_reason) {
         yield {
           type: "done",
@@ -564,7 +500,6 @@ export class UnifiedGateway {
         };
       }
 
-      // Handle usage (only in final chunk for OpenAI)
       if (chunk.usage) {
         yield {
           type: "usage",
@@ -578,131 +513,21 @@ export class UnifiedGateway {
     }
   }
 
-  // ═════════════════════════════════════════════════════════════════════════════
-  // ANTHROPIC IMPLEMENTATION (Placeholder)
-  // ═════════════════════════════════════════════════════════════════════════════
+  // ─── Utility ───────────────────────────────────────────────────────────────
 
-  private async completeAnthropic(
-    request: CompletionRequest & { model: string }
-  ): Promise<CompletionResponse> {
-    if (!ANTHROPIC_API_KEY) {
-      throw new Error("Anthropic API key not configured");
-    }
-
-    // Convert messages to Anthropic format
-    const systemMessage = request.messages.find((m) => m.role === "system");
-    const chatMessages = request.messages.filter((m) => m.role !== "system");
-
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: request.model,
-        max_tokens: request.maxTokens ?? 4096,
-        system: systemMessage?.content,
-        messages: chatMessages.map((m) => ({
-          role: m.role === "tool" ? "user" : m.role,
-          content: m.content,
-        })),
-        temperature: request.temperature,
-        top_p: request.topP,
-        stop_sequences: request.stop,
-        tools: request.tools?.map((t) => ({
-          name: t.function.name,
-          description: t.function.description,
-          input_schema: t.function.parameters,
-        })),
-      }),
-      signal: request.signal,
-    });
-
-    if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`Anthropic error: ${error}`);
-    }
-
-    const data = (await response.json()) as {
-      content: { type: string; text?: string; name?: string; input?: unknown }[];
-      stop_reason: string;
-      usage: { input_tokens: number; output_tokens: number };
-      model: string;
-    };
-
-    const textContent = data.content.find((c) => c.type === "text")?.text || "";
-    const toolUseContent = data.content.filter((c) => c.type === "tool_use");
-
-    return {
-      content: textContent,
-      toolCalls: toolUseContent.map((tc) => ({
-        id: `call_${Date.now()}`,
-        name: tc.name || "",
-        arguments: tc.input as Record<string, unknown>,
-      })),
-      usage: {
-        promptTokens: data.usage.input_tokens,
-        completionTokens: data.usage.output_tokens,
-        totalTokens: data.usage.input_tokens + data.usage.output_tokens,
-      },
-      model: data.model,
-      provider: "anthropic",
-      finishReason:
-        data.stop_reason === "tool_use"
-          ? "tool_calls"
-          : (data.stop_reason as CompletionResponse["finishReason"]),
-    };
-  }
-
-  private async *streamAnthropic(
-    request: CompletionRequest & { model: string }
-  ): AsyncGenerator<GatewayStreamChunk> {
-    if (!ANTHROPIC_API_KEY) {
-      yield {
-        type: "error",
-        error: {
-          code: "ANTHROPIC_NOT_INITIALIZED",
-          message: "Anthropic API key not configured",
-        },
-      };
-      return;
-    }
-
-    // Placeholder: Anthropic streaming implementation
-    yield {
-      type: "error",
-      error: {
-        code: "NOT_IMPLEMENTED",
-        message: "Anthropic streaming not yet implemented",
-      },
-    };
-  }
-
-  // ═════════════════════════════════════════════════════════════════════════════
-  // UTILITY METHODS
-  // ═════════════════════════════════════════════════════════════════════════════
-
-  /**
-   * Check if a provider is available.
-   */
   isProviderAvailable(provider: LLMProvider): boolean {
     switch (provider) {
       case "ollama":
-        return true; // Always attempt Ollama
+        return true;
       case "openai":
-        return !!this.openaiClient;
+        return this.openaiEnabled;
       case "anthropic":
-        return !!ANTHROPIC_API_KEY;
+        return this.anthropicEnabled;
       default:
         return false;
     }
   }
 
-  /**
-   * List available models for a provider.
-   */
   async listModels(provider: LLMProvider): Promise<string[]> {
     switch (provider) {
       case "ollama":
@@ -716,7 +541,7 @@ export class UnifiedGateway {
           return [];
         }
       case "openai":
-        if (!this.openaiClient) return [];
+        if (!this.openaiClient || !this.openaiEnabled) return [];
         try {
           const models = await this.openaiClient.models.list();
           return models.data
@@ -726,6 +551,7 @@ export class UnifiedGateway {
           return [];
         }
       case "anthropic":
+        if (!this.anthropicEnabled) return [];
         return [
           "claude-3-opus-20240229",
           "claude-3-sonnet-20240229",
@@ -737,14 +563,6 @@ export class UnifiedGateway {
   }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SINGLETON INSTANCE
-// ═══════════════════════════════════════════════════════════════════════════════
+// ─── Singleton ───────────────────────────────────────────────────────────────
 
 export const unifiedGateway = new UnifiedGateway();
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// EXPORT TYPES
-// ═══════════════════════════════════════════════════════════════════════════════
-
-

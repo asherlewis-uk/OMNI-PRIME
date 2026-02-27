@@ -1,10 +1,16 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// GENESIS TYPES - Onboarding & User Profile System
+// GENESIS TYPES — Onboarding & User Profile System
+// Canonical source of truth for all Genesis/Onboarding domain types.
+// These types are consumed by: Zustand stores, API routes, ContextInjector,
+// Drizzle schema ($type<> annotations), and UI components.
 // ═══════════════════════════════════════════════════════════════════════════════
+
+// ─── Enums (string union types for SQLite TEXT columns) ──────────────────────
 
 /**
  * Use case categories for the Genesis onboarding flow.
- * These determine the default agent templates to spawn.
+ * Determines the default agent templates to spawn.
+ * Stored in: user_profiles.use_case
  */
 export type UseCaseType =
   | "marketer"
@@ -18,28 +24,38 @@ export type UseCaseType =
 
 /**
  * Skill level affects the default temperature and prompt style.
+ * Stored in: user_profiles.skill_level
  */
 export type SkillLevel = "beginner" | "intermediate" | "expert";
 
 /**
  * Work style influences agent collaboration patterns.
+ * Stored in: user_profiles.work_style
  */
 export type WorkStyle = "solo" | "team" | "hybrid";
 
 /**
  * Content tone for agent responses.
+ * Stored in: user_profiles.content_tone
  */
 export type ContentTone = "professional" | "casual" | "technical" | "creative";
+
+// ─── Core Data Structures ────────────────────────────────────────────────────
 
 /**
  * Raw answers collected from the onboarding wizard.
  * Keys correspond to step IDs for traceability.
+ * Stored in: user_profiles.raw_answers (JSON)
  */
 export type GenesisRawAnswers = Record<string, string | string[]>;
 
 /**
- * Core genesis data structure - persisted after onboarding completion.
+ * Core genesis data structure — the composite view of a user's onboarding profile.
  * This is the "DNA" that personalizes all agent interactions.
+ *
+ * NOTE: In the DB, these fields are stored as individual columns on
+ * `user_profiles` (not as a single JSON blob). This interface represents
+ * the *reassembled* composite used by the ContextInjector and Genesis store.
  */
 export interface GenesisData {
   /** Primary use case selected by the user */
@@ -48,7 +64,7 @@ export interface GenesisData {
   /** Specific objectives the user wants to achieve */
   objectives: string[];
 
-  /** User's expertise level - affects response depth */
+  /** User's expertise level — affects response depth */
   skillLevel: SkillLevel;
 
   /** Preferred collaboration pattern */
@@ -63,6 +79,8 @@ export interface GenesisData {
   /** Complete record of onboarding answers for debugging/template refinement */
   rawAnswers: GenesisRawAnswers;
 }
+
+// ─── Onboarding Wizard State ─────────────────────────────────────────────────
 
 /**
  * Onboarding wizard step state.
@@ -79,6 +97,7 @@ export interface OnboardingStep {
 
 /**
  * Complete onboarding state for the wizard component.
+ * Used by the `genesisStore` Zustand store.
  */
 export interface OnboardingState {
   /** Current step index (0-based) */
@@ -112,6 +131,8 @@ export interface OnboardingState {
   generatedAgentIds: string[];
 }
 
+// ─── Template Definitions ────────────────────────────────────────────────────
+
 /**
  * Use case template definition.
  * Maps use cases to default agent configurations.
@@ -128,6 +149,7 @@ export interface UseCaseTemplate {
 
 /**
  * Agent template definition within a use case.
+ * Used by the Genesis agent generator to spawn personalized agents.
  */
 export interface TemplateAgentDef {
   id: string;
@@ -141,9 +163,11 @@ export interface TemplateAgentDef {
   defaultTemperature: number;
 }
 
+// ─── Context Injection ───────────────────────────────────────────────────────
+
 /**
  * Context guidance generated from genesis data.
- * Injected into agent system prompts.
+ * Injected into agent system prompts by the ContextInjector.
  */
 export interface GenesisContext {
   formattedContext: string;
@@ -152,8 +176,11 @@ export interface GenesisContext {
   workStyleGuidance: string;
 }
 
+// ─── API Contracts ───────────────────────────────────────────────────────────
+
 /**
  * API payload for completing onboarding.
+ * POST /api/genesis
  */
 export interface CompleteOnboardingPayload {
   genesisData: GenesisData;
@@ -161,6 +188,7 @@ export interface CompleteOnboardingPayload {
 
 /**
  * API response after completing onboarding.
+ * POST /api/genesis → response
  */
 export interface CompleteOnboardingResponse {
   success: boolean;

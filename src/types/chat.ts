@@ -1,39 +1,51 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// CHAT TYPES - Sessions, Messages, and Streaming
+// CHAT TYPES — Sessions, Messages, and Streaming
+// Canonical source of truth for all Chat domain types.
+// Column-level alignment: scalar fields on ChatSession/Message mirror their
+// respective Drizzle tables (chat_sessions, messages).
+//
+// NOTE: KnowledgeDoc has been relocated to ./tool.ts to break the circular
+// dependency chain (agent → chat → tool → agent). Import it from there.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import type { Agent } from "./agent";
 import type { SwarmDef } from "./swarm";
 import type { ToolCall } from "./tool";
 
+// ─── Enums ───────────────────────────────────────────────────────────────────
+
 /**
  * Message role in conversation.
+ * Stored in: messages.role
  */
 export type MessageRole = "user" | "assistant" | "system" | "tool";
 
 /**
- * Chat session type - can be with single agent or swarm.
+ * Chat session type — can be with single agent or swarm.
+ * Derived at runtime from which FK is populated (agentId vs swarmId).
  */
 export type ChatSessionType = "agent" | "swarm";
 
+// ─── Core Entities ───────────────────────────────────────────────────────────
+
 /**
  * Chat session entity.
- * Represents a conversation with an agent or swarm.
+ * Maps to: chat_sessions table.
  */
 export interface ChatSession {
-  /** Unique identifier */
+  /** PK — auto-generated UUID */
   id: string;
 
-  /** Owner profile ID */
+  /** FK → user_profiles.id */
   ownerId: string;
 
-  /** Session type indicator */
+  /** Derived session type indicator (not a DB column — computed from FKs) */
   type: ChatSessionType;
 
-  /** Associated agent (if type is 'agent') */
+  /** FK → agents.id (nullable — set when type is 'agent') */
   agentId: string | null;
 
-  /** Associated swarm (if type is 'swarm') */
+  /** FK → swarm_defs.id (nullable — set when type is 'swarm') */
   swarmId: string | null;
 
   /** Session title (auto-generated or user-set) */
@@ -42,7 +54,7 @@ export interface ChatSession {
   /** Model used in this session */
   modelUsed: string | null;
 
-  /** Message count cache */
+  /** Cached message count */
   messageCount: number;
 
   /** Whether session is archived */
@@ -55,20 +67,20 @@ export interface ChatSession {
   createdAt: Date;
   updatedAt: Date;
 
-  /** Expanded relations */
+  /** Expanded relations (NOT in DB row) */
   agent?: Agent | null;
   swarm?: SwarmDef | null;
 }
 
 /**
  * Message entity.
- * Individual message within a chat session.
+ * Maps to: messages table.
  */
 export interface Message {
-  /** Unique identifier */
+  /** PK — auto-generated UUID */
   id: string;
 
-  /** Parent session ID */
+  /** FK → chat_sessions.id */
   sessionId: string;
 
   /** Message role */
@@ -77,13 +89,13 @@ export interface Message {
   /** Message content (markdown supported) */
   content: string;
 
-  /** Agent who sent this (for assistant messages) */
+  /** FK → agents.id (for assistant messages — which agent authored this) */
   agentId: string | null;
 
-  /** Additional metadata */
+  /** Additional metadata (JSON column) */
   metadata: MessageMetadata;
 
-  /** Token counts (if available) */
+  /** Token counts (if available from provider) */
   promptTokens: number | null;
   completionTokens: number | null;
   totalTokens: number | null;
@@ -94,13 +106,15 @@ export interface Message {
   /** Timestamp */
   createdAt: Date;
 
-  /** Expanded relations */
+  /** Expanded relations (NOT in DB row) */
   agent?: Agent | null;
   toolCalls?: ToolCall[];
 }
 
 /**
  * Message metadata structure.
+ * Stored in: messages.metadata (JSON column).
+ * All fields are optional — metadata grows organically during the message lifecycle.
  */
 export interface MessageMetadata {
   /** LLM provider used */
@@ -141,53 +155,7 @@ export interface MessageMetadata {
   custom?: Record<string, unknown>;
 }
 
-/**
- * Knowledge document entity.
- * Represents a file in the knowledge base.
- */
-export interface KnowledgeDoc {
-  /** Unique identifier */
-  id: string;
-
-  /** Owner profile ID */
-  ownerId: string;
-
-  /** Storage filename (hashed) */
-  filename: string;
-
-  /** Original upload filename */
-  originalName: string;
-
-  /** MIME type */
-  fileType: string;
-
-  /** File size in bytes */
-  fileSize: number;
-
-  /** SHA-256 content hash */
-  contentHash: string;
-
-  /** Storage path */
-  storagePath: string;
-
-  /** Number of vector chunks */
-  vectorCount: number;
-
-  /** Chunking configuration */
-  chunkSize: number | null;
-  chunkOverlap: number | null;
-
-  /** Indexing status */
-  status: "pending" | "indexing" | "ready" | "error";
-
-  /** Error message if failed */
-  errorMessage: string | null;
-
-  /** Timestamps */
-  indexedAt: Date | null;
-  createdAt: Date;
-  updatedAt: Date;
-}
+// ─── SSE Streaming Types ─────────────────────────────────────────────────────
 
 /**
  * Stream chunk types for SSE.
@@ -204,6 +172,7 @@ export type StreamChunkType =
 
 /**
  * Stream chunk for SSE responses.
+ * Emitted by GET/POST /api/chat/stream.
  */
 export interface StreamChunk {
   type: StreamChunkType;
@@ -258,8 +227,11 @@ export interface StreamChunk {
   timestamp: number;
 }
 
+// ─── API Payloads ────────────────────────────────────────────────────────────
+
 /**
  * Chat session creation payload.
+ * POST /api/chat/sessions
  */
 export interface CreateSessionPayload {
   type: ChatSessionType;
@@ -270,6 +242,7 @@ export interface CreateSessionPayload {
 
 /**
  * Send message payload.
+ * POST /api/chat/stream
  */
 export interface SendMessagePayload {
   sessionId: string;
@@ -281,8 +254,11 @@ export interface SendMessagePayload {
   }[];
 }
 
+// ─── UI / Display Types ──────────────────────────────────────────────────────
+
 /**
  * Message with UI-specific fields.
+ * Used by the chatStore Zustand store for rendering state.
  */
 export interface MessageWithUIState extends Message {
   isStreaming: boolean;
@@ -292,6 +268,7 @@ export interface MessageWithUIState extends Message {
 
 /**
  * Session with computed fields for UI.
+ * Used by sidebar session list.
  */
 export interface SessionWithPreview extends ChatSession {
   preview: string | null;
