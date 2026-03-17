@@ -18,6 +18,7 @@ import {
 import { eq, desc } from "drizzle-orm";
 import { unifiedGateway } from "@/lib/ai/unifiedGateway";
 import { contextInjector } from "@/lib/ai/contextInjector";
+import { addRecollection } from "@/lib/ai/vectorService";
 import { toolRegistry } from "@/lib/mcp/toolRegistry";
 import { addToolExecutionJob } from "@/lib/queue/queues";
 import type { GatewayStreamChunk } from "@/lib/ai/unifiedGateway";
@@ -137,14 +138,14 @@ async function* streamConversation(
       content: userMessage,
       metadata: {},
       isComplete: true,
-    });
-
-    const agentTools = await toolRegistry.getAgentTools(session.agent.id);
+    });    const agentTools = await toolRegistry.getAgentTools(session.agent.id);
     const availableTools = toolRegistry.convertToGatewayTools(agentTools);
 
     await contextInjector.ensureLoaded();
-    const systemPrompt = contextInjector.buildSystemPrompt(
+    const systemPrompt = await contextInjector.buildSystemPrompt(
       session.agent.systemPrompt,
+      session.agent.id,
+      userMessage,
     );
 
     const messageHistory = await db.query.messages.findMany({
@@ -302,6 +303,16 @@ async function* streamConversation(
         lastActiveAt: new Date(),
       })
       .where(eq(agents.id, session.agent.id));
+
+    // Add to Vector Memory if the response was meaningful
+    if (fullContent && fullContent.trim().length > 10) {
+      const recollectionContent = `USER: "${userMessage}"\nASSISTANT: "${fullContent}"`;
+      // No need to await this, let it run in the background
+      addRecollection({
+        content: recollectionContent,
+        agentId: session.agent.id,
+      }).catch(console.error);
+    }
 
     yield `data: ${JSON.stringify({
       type: "complete",

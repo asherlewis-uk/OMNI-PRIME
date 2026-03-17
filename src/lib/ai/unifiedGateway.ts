@@ -11,6 +11,12 @@
 
 import OpenAI from "openai";
 import type { MCPTool } from "@/types/tool";
+import type {
+  MessageContentPart,
+  TextPart,
+  ImageUrlPart,
+  InlineDataPart,
+} from "@/types/chat";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -18,7 +24,7 @@ export type LLMProvider = "ollama" | "openai" | "anthropic";
 
 export interface GatewayMessage {
   role: "system" | "user" | "assistant" | "tool";
-  content: string;
+  content: string | MessageContentPart[];
   tool_calls?: {
     id: string;
     type: "function";
@@ -142,6 +148,73 @@ export class UnifiedGateway {
   }
 
   /**
+   * Transforms a multimodal `GatewayMessage` into a provider-specific format.
+   * For Ollama, it extracts base64 images.
+   * For OpenAI, it ensures content is a valid array of parts.
+   */
+  private transformMessageContent(
+    message: GatewayMessage,
+    provider: LLMProvider,
+  ): GatewayMessage {
+    if (typeof message.content === "string" || !Array.isArray(message.content)) {
+      return message; // Return as is if content is just a string
+    }
+
+    const newContent: any[] = [];
+    const ollamaImages: string[] = [];
+
+    for (const part of message.content) {
+      if (part.type === "text") {
+        newContent.push({ type: "text", text: part.text });
+      } else if (part.type === "image_url") {
+        if (provider === "ollama") {
+          // Ollama expects images in a separate top-level `images` array.
+          // We extract the base64 data from the URL.
+          const base64Data = part.image_url.url.split(",")[1];
+          if (base64Data) {
+            ollamaImages.push(base64Data);
+          }
+        } else {
+          // OpenAI and others expect the image_url object directly.
+          newContent.push(part);
+        }
+      } else if (part.type === "inline_data") {
+        if (provider === "ollama") {
+          ollamaImages.push(part.inline_data.data);
+        } else {
+          // Convert Gemini's inline_data to OpenAI's image_url format.
+          newContent.push({
+            type: "image_url",
+            image_url: {
+              url: `data:${part.inline_data.mimeType};base64,${part.inline_data.data}`,
+            },
+          });
+        }
+      }
+    }
+
+    // For Ollama, the main content should only contain text parts.
+    const textContent = newContent
+      .filter((part) => part.type === "text")
+      .map((part) => part.text)
+      .join("\n");
+
+    if (provider === "ollama") {
+      return {
+        ...message,
+        content: textContent,
+        images: ollamaImages.length > 0 ? ollamaImages : undefined,
+      } as GatewayMessage;
+    }
+
+    // For OpenAI, the content is the array of parts.
+    return {
+      ...message,
+      content: newContent,
+    };
+  }
+
+  /**
    * Convert MCP tools to gateway tool format.
    */
   convertTools(mcpTools: MCPTool[]): GatewayTool[] {
@@ -216,12 +289,15 @@ export class UnifiedGateway {
   private async completeOllama(
     request: CompletionRequest & { model: string },
   ): Promise<CompletionResponse> {
+    const transformedMessages = request.messages.map((m) =>
+      this.transformMessageContent(m, "ollama"),
+    );
     const response = await fetch(`${OLLAMA_BASE_URL}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: request.model,
-        messages: request.messages,
+        messages: transformedMessages,
         stream: false,
         options: {
           temperature: request.temperature ?? 0.7,
@@ -276,12 +352,15 @@ export class UnifiedGateway {
   private async *streamOllama(
     request: CompletionRequest & { model: string },
   ): AsyncGenerator<GatewayStreamChunk> {
+    const transformedMessages = request.messages.map((m) =>
+      this.transformMessageContent(m, "ollama"),
+    );
     const response = await fetch(`${OLLAMA_BASE_URL}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: request.model,
-        messages: request.messages,
+        messages: transformedMessages,
         stream: true,
         options: {
           temperature: request.temperature ?? 0.7,
@@ -396,9 +475,13 @@ export class UnifiedGateway {
       );
     }
 
+    const transformedMessages = request.messages.map((m) =>
+      this.transformMessageContent(m, "openai"),
+    );
+
     const response = await this.openaiClient.chat.completions.create({
       model: request.model,
-      messages: request.messages as OpenAI.Chat.ChatCompletionMessageParam[],
+      messages: transformedMessages as OpenAI.Chat.ChatCompletionMessageParam[],
       tools: request.tools,
       tool_choice: request.toolChoice,
       temperature: request.temperature,
@@ -442,9 +525,13 @@ export class UnifiedGateway {
       return;
     }
 
+    const transformedMessages = request.messages.map((m) =>
+      this.transformMessageContent(m, "openai"),
+    );
+
     const stream = await this.openaiClient.chat.completions.create({
       model: request.model,
-      messages: request.messages as OpenAI.Chat.ChatCompletionMessageParam[],
+      messages: transformedMessages as OpenAI.Chat.ChatCompletionMessageParam[],
       tools: request.tools,
       tool_choice: request.toolChoice,
       temperature: request.temperature,

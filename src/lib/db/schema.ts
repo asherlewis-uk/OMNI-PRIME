@@ -196,6 +196,34 @@ export const agentKnowledgeRelations = relations(agentKnowledge, ({ one }) => ({
 }));
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// AGENT RECOLLECTIONS (Vector Memory)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export const agentRecollections = sqliteTable("agent_recollections", {
+  id: text("id")
+    .primaryKey()
+    .$defaultFn(() => uuidv4()),
+  agentId: text("agent_id")
+    .notNull()
+    .references(() => agents.id, { onDelete: "cascade" }),
+  content: text("content").notNull(),
+  chromaId: text("chrom-id").notNull(), // ID from the vector store
+  createdAt: integer("created_at", { mode: "timestamp" })
+    .notNull()
+    .default(sql`(unixepoch())`),
+});
+
+export const agentRecollectionsRelations = relations(
+  agentRecollections,
+  ({ one }) => ({
+    agent: one(agents, {
+      fields: [agentRecollections.agentId],
+      references: [agents.id],
+    }),
+  }),
+);
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // SWARM DEFINITIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -593,6 +621,12 @@ export type NewAgentTool = typeof agentTools.$inferInsert;
 
 export type DbAgentKnowledge = typeof agentKnowledge.$inferSelect;
 export type NewAgentKnowledge = typeof agentKnowledge.$inferInsert;
+
+export type DbAgentRecollection = typeof agentRecollections.$inferSelect;
+export type NewAgentRecollection = typeof agentRecollections.$inferInsert;
+
+export type DbAgentRecollection = typeof agentRecollections.$inferSelect;
+export type NewAgentRecollection = typeof agentRecollections.$inferInsert;
 
 export type DbSwarmDef = typeof swarmDefs.$inferSelect;
 export type NewSwarmDef = typeof swarmDefs.$inferInsert;

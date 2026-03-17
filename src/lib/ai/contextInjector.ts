@@ -9,6 +9,7 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import { reconstructGenesisData } from "@/lib/db/client";
+import { searchRecollections } from "@/lib/ai/vectorService";
 import type {
   GenesisData,
   GenesisContext,
@@ -152,22 +153,45 @@ export class ContextInjector {
    * Build a complete system prompt with injected context.
    * This is the primary entry point used by API routes.
    */
-  buildSystemPrompt(
+  async buildSystemPrompt(
     basePrompt: string,
+    agentId: string,
+    userMessage: string,
     options: InjectionOptions & { position?: "start" | "end" } = {},
-  ): string {
-    const context = this.getGenesisContext(options);
+  ): Promise<string> {
+    const genesisContext = this.getGenesisContext(options);
 
-    if (!context) {
+    const relevantRecollections = await searchRecollections({
+      agentId,
+      query: userMessage,
+      nResults: 5,
+    });
+
+    let recollectionContext = "";
+    if (relevantRecollections.length > 0) {
+      recollectionContext = [
+        "[RELEVANT RECOLLECTIONS]",
+        "\u2500".repeat(40),
+        ...relevantRecollections.map((r) => `\u2022 ${r.replace(/\n/g, " \\ ")}`),
+        "\u2500".repeat(40),
+        "[END RECOLLECTIONS]",
+      ].join("\n");
+    }
+
+    const fullContext = [genesisContext, recollectionContext]
+      .filter(Boolean)
+      .join("\n\n");
+
+    if (!fullContext) {
       return basePrompt;
     }
 
     const position = options.position ?? "end";
 
     if (position === "start") {
-      return `${context}\n\n${basePrompt}`;
+      return `${fullContext}\n\n${basePrompt}`;
     }
-    return `${basePrompt}\n\n${context}`;
+    return `${basePrompt}\n\n${fullContext}`;
   }
 
   // ─── Formatting Methods ────────────────────────────────────────────────────

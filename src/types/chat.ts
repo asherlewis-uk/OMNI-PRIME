@@ -20,6 +20,36 @@ import type { ToolCall } from "./tool";
  */
 export type MessageRole = "user" | "assistant" | "system" | "tool";
 
+/** A standard text part of a message. */
+export interface TextPart {
+  type: "text";
+  text: string;
+}
+
+/** An image part of a message, using a URL (compatible with OpenAI). */
+export interface ImageUrlPart {
+  type: "image_url";
+  image_url: {
+    /** The URL of the image, can be a data URI (base64) or a public URL. */
+    url: string;
+    /** Optional detail level for the image. */
+    detail?: "low" | "high" | "auto";
+  };
+}
+
+/** An inline data part for media (compatible with Gemini). */
+export interface InlineDataPart {
+  type: "inline_data";
+  inline_data: {
+    mimeType: "image/jpeg" | "image/png" | "image/webp" | "image/gif";
+    /** The base64-encoded data of the media. */
+    data: string;
+  };
+}
+
+/** A union of all possible content parts for a message. */
+export type MessageContentPart = TextPart | ImageUrlPart | InlineDataPart;
+
 /**
  * Chat session type — can be with single agent or swarm.
  * Derived at runtime from which FK is populated (agentId vs swarmId).
@@ -87,7 +117,7 @@ export interface Message {
   role: MessageRole;
 
   /** Message content (markdown supported) */
-  content: string;
+  content: string | MessageContentPart[];
 
   /** FK → agents.id (for assistant messages — which agent authored this) */
   agentId: string | null;
